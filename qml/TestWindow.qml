@@ -10,7 +10,7 @@ ApplicationWindow {
 
     Label {
         anchors.centerIn: parent
-        text: "Hello from ArchNav!"
+        text: "Hello from archnav!"
         color: "white"
         font.pixelSize: 24
     }

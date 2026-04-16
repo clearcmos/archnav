@@ -8,10 +8,10 @@
 class SystemTrayHandler;
 
 /**
- * System tray icon for ArchNav.
+ * System tray icon for archnav.
  * - Tray icon always visible when app running
  * - Left-click toggles window visibility
- * - Right-click shows menu with "Show ArchNav" / "Configure Shortcut..." / "Exit"
+ * - Right-click shows menu with "Show archnav" / "Configure Shortcut..." / "Exit"
  *
  * For global hotkey: Users should set up a KDE custom shortcut
  * that runs "archnav --toggle"

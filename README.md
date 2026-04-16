@@ -1,8 +1,8 @@
-# ArchNav
+# archnav
 
 Fast, keyboard-centric file navigator for KDE Wayland with instant trigram-indexed search.
 
-![ArchNav Icon](archnav.svg)
+![archnav Icon](archnav.svg)
 
 ## Features
 
@@ -81,7 +81,7 @@ install -Dm644 data/archnav.desktop /usr/share/applications/archnav.desktop
 
 ### System Tray
 
-ArchNav runs in the system tray:
+archnav runs in the system tray:
 - **Left-click** tray icon to toggle window visibility
 - **Right-click** for menu: Show/Hide, Configure Shortcut, Exit
 - Closing the window (X or Esc) hides to tray instead of quitting
@@ -92,7 +92,7 @@ ArchNav runs in the system tray:
 Set up a global shortcut for `archnav --toggle`:
 
 1. System Settings - Shortcuts - click "Add New" - "Command or Script..."
-2. Name: `ArchNav Toggle`
+2. Name: `archnav Toggle`
 3. Command: `archnav --toggle`
 4. Set your preferred key (e.g., `Alt+``)
 

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-ArchNav is a fast, keyboard-centric file navigator for KDE Wayland on Arch Linux. It provides instant search across hundreds of thousands of files using trigram indexing, with a Qt/QML GUI.
+archnav is a fast, keyboard-centric file navigator for KDE Wayland on Arch Linux. It provides instant search across hundreds of thousands of files using trigram indexing, with a Qt/QML GUI.
 
 ## Architecture
 
@@ -197,7 +197,7 @@ The context menu (`context_menu.cpp`) provides Dolphin-like file operations:
 The system tray (`system_tray.cpp`) provides:
 - **Tray icon**: Uses `system-file-manager` theme icon
 - **Left-click**: Toggle window visibility
-- **Right-click menu**: Show/Hide ArchNav, Configure Shortcut..., Exit
+- **Right-click menu**: Show/Hide archnav, Configure Shortcut..., Exit
 - **Configure Shortcut**: Opens KDE System Settings (kcm_keys) for manual shortcut setup
 
 Window close behavior:

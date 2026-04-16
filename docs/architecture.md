@@ -2,7 +2,7 @@
 
 ## Overview
 
-ArchNav is a unified Rust application with Qt/QML GUI using cxx-qt for bindings. It provides instant file search across large filesystems via trigram indexing.
+archnav is a unified Rust application with Qt/QML GUI using cxx-qt for bindings. It provides instant file search across large filesystems via trigram indexing.
 
 The architecture prioritizes:
 - **Instant response** - Trigram index enables sub-10ms search

@@ -60,12 +60,12 @@ void SystemTray::setupTray()
                  QIcon::fromTheme("folder",
                  QIcon::fromTheme("document-open")));
     m_trayIcon->setIcon(icon);
-    m_trayIcon->setToolTip("ArchNav - File Navigator");
+    m_trayIcon->setToolTip("archnav - File Navigator");
 
     // Create context menu
     m_trayMenu = new QMenu();
 
-    m_showAction = m_trayMenu->addAction(QIcon::fromTheme("window-new"), "Show ArchNav");
+    m_showAction = m_trayMenu->addAction(QIcon::fromTheme("window-new"), "Show archnav");
     QObject::connect(m_showAction, &QAction::triggered, m_handler, &SystemTrayHandler::onShowTriggered);
 
     m_trayMenu->addSeparator();
@@ -108,7 +108,7 @@ void SystemTray::setHotkey(const QString &hotkey)
 void SystemTray::setWindowVisible(bool visible)
 {
     if (m_showAction) {
-        m_showAction->setText(visible ? "Hide ArchNav" : "Show ArchNav");
+        m_showAction->setText(visible ? "Hide archnav" : "Show archnav");
     }
 }
 

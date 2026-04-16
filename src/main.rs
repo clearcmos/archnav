@@ -103,7 +103,7 @@ fn main() {
         ];
 
         println!("╔══════════════════════════════════════════════════════════════════════╗");
-        println!("║  ArchNav Search Benchmark                                           ║");
+        println!("║  archnav Search Benchmark                                           ║");
         println!("║  Files indexed: {:>10}                                           ║", file_count);
         println!("║  Iterations:    {:>10}                                           ║", iterations);
         println!("╚══════════════════════════════════════════════════════════════════════╝");
@@ -156,7 +156,7 @@ fn main() {
         std::process::exit(0);
     }
 
-    tracing::info!("ArchNav v0.1.0 starting");
+    tracing::info!("archnav v0.1.0 starting");
 
     // Create Qt application (QApplication for QtWidgets support - needed for context menus)
     unsafe { create_qapplication(); }

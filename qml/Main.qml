@@ -10,7 +10,7 @@ ApplicationWindow {
     width: 1000
     height: 700
     visible: true
-    title: "ArchNav"
+    title: "archnav"
     color: Style.bgPrimary
 
     // Hide to tray instead of quitting when window is closed
