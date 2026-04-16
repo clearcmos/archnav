@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=ArchNav
+GenericName=File Navigator
+Comment=Fast keyboard-centric file navigator
+Exec=archnav
+Icon=system-file-manager
+Terminal=false
+Categories=Utility;FileManager;
+Keywords=file;search;find;navigate;
+
+Actions=Toggle;
+
+[Desktop Action Toggle]
+Name=Toggle ArchNav
+Exec=archnav --toggle
+# This action will appear in KDE Shortcuts settings
