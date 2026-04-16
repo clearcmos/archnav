@@ -8,7 +8,7 @@ Fast, keyboard-centric file navigator for KDE Wayland with instant trigram-index
 
 - **Instant search** - Trigram-indexed engine provides sub-10ms search across 600k+ files
 - **Smart previews** - Text files, images, audio/video metadata, archive contents
-- **Unified search** - Search all bookmarks simultaneously, or filter with `bookmark:query`
+- **Unified search** - Search all bookmarks simultaneously
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
 - **Real-time updates** - inotify watches for instant file change detection
@@ -67,17 +67,21 @@ install -Dm644 data/archnav.desktop /usr/share/applications/archnav.desktop
 | `Ctrl+O` | Open containing folder |
 | `Ctrl+P` | Toggle preview pane |
 | `Ctrl+R` | Refresh index |
+| `Ctrl+Shift+F` | Toggle frecency sort |
 | `Ctrl+=` / `Ctrl+-` | Zoom in / out |
 | `Ctrl+0` | Reset zoom |
+| `F1` | Toggle keyboard shortcuts help |
 | `Right-click` | Context menu |
-| `Esc` | Close window |
+| `Esc` | Hide to tray |
 
 ### Search Syntax
 
-- **Simple**: `query` - search all bookmarks
-- **Bookmark filter**: `home:query` - search only "home" bookmark
-- **Extension filter**: `*.rs query` - search only .rs files
-- **Combined**: `home:*.md readme` - search .md files in "home" for "readme"
+- **Simple**: `query` - substring search across all bookmarks
+- **Extension filter**: `*.rs query` - filter by file extension (position-independent)
+- **Regex**: `/^README` - regex search (prefix with `/`)
+- **Glob**: `foo*bar` - glob pattern (contains `*` or `?`)
+- **Fuzzy**: `~confg` - fuzzy match with typo tolerance (prefix with `~`)
+- **Path-aware**: `src/config` - match "config" under a "src" directory
 
 ### System Tray
 
@@ -118,8 +122,8 @@ Config stored at `~/.config/archnav/config.json`:
     {"name": "projects", "path": "/home/user/projects", "is_network": false},
     {"name": "nas", "path": "/mnt/nas", "is_network": true}
   ],
-  "exclude_patterns": ["*.pyc", "__pycache__", ".git", "node_modules"],
-  "max_results": 500
+  "max_results": 500,
+  "toggle_hotkey": "Alt+`"
 }
 ```
 

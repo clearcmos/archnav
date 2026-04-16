@@ -23,7 +23,7 @@ src/
 │   ├── scanner.rs       # Directory scanner using walkdir
 │   ├── watcher.rs       # inotify file watcher for real-time updates
 │   ├── integrity.rs     # Periodic integrity checker + network scanner
-│   └── query.rs         # Query parsing (bookmark:, *.ext, sort order)
+│   └── query.rs         # Query parsing (*.ext, /regex, glob, ~fuzzy, path/aware)
 ├── preview/             # Preview generators
 │   ├── text.rs          # Text file preview (with size limit)
 │   ├── media.rs         # Audio/video metadata via ffprobe
@@ -38,6 +38,10 @@ src/
 ├── system_tray.rs       # Rust FFI wrapper for system tray
 ├── system_tray.cpp      # QSystemTrayIcon with menu (Qt/C++)
 ├── system_tray.h        # System tray header
+├── file_opener.rs       # Rust FFI wrapper for KIO file opener
+├── file_opener.cpp      # KIO::OpenUrlJob file opener (proper Wayland focus)
+├── file_opener.h        # File opener header
+├── qt_debug_handler.cpp # Qt message handler redirecting to Rust tracing
 └── qt_app.cpp           # QApplication wrapper for QtWidgets (needed for QMenu)
 
 data/
@@ -49,6 +53,7 @@ qml/
 ├── ResultsList.qml      # File results ListView with delegates
 ├── PreviewPanel.qml     # Preview pane (text, images, metadata)
 ├── BookmarkDialog.qml   # Bookmark management dialog
+├── TestWindow.qml       # Minimal test window for development
 └── Style.qml            # Singleton with colors, fonts, spacing
 ```
 
@@ -106,7 +111,9 @@ The search engine uses **trigram indexing** for instant substring matching:
 
 - **Instant search**: Sub-10ms search across 600k+ files via trigram index
 - **Unified search**: Searches all bookmarks simultaneously by default
-- **Bookmark filtering**: `bookmark-name:query` to search within specific bookmark
+- **Regex search**: `/pattern` for regex matching
+- **Fuzzy search**: `~query` for typo-tolerant matching
+- **Path-aware search**: `src/config` to match files under specific directories
 - **Extension filtering**: `*.py query` to filter by file extension
 - **Sort options**: Recent, Oldest, Name A-Z/Z-A, Largest, Smallest, Path
 - **Smart previews**: Text, images, audio/video metadata, archive contents
@@ -126,6 +133,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 | `Ctrl+O` | Open containing folder |
 | `Ctrl+P` | Toggle preview pane |
 | `Ctrl+R` | Rescan all bookmarks |
+| `Ctrl+Shift+F` | Toggle frecency sort |
 | `Ctrl+=` / `Ctrl++` | Zoom in |
 | `Ctrl+-` | Zoom out |
 | `Ctrl+0` | Reset zoom |
@@ -148,7 +156,6 @@ The search engine uses **trigram indexing** for instant substring matching:
   "bookmarks": [
     {"name": "home", "path": "/home/user", "is_network": false}
   ],
-  "exclude_patterns": ["*.pyc", "__pycache__", ".git", "node_modules"],
   "max_results": 500,
   "toggle_hotkey": "Alt+`"
 }
@@ -158,10 +165,10 @@ Note: `toggle_hotkey` is stored for reference but global shortcuts must be confi
 
 ## Exclude Patterns
 
-Hardcoded in `scanner.rs`:
+Hardcoded in `trigram.rs`:
 - `.git`, `node_modules`, `__pycache__`, `.cache`, `.npm`, `.cargo`
 - `target`, `build`, `dist`, `.next`, `.nuxt`
-- `.Trash*`, `Trash`
+- `.Trash`, `Trash`, `.steam`, `dosdevices`
 
 ## QML/Rust Bridge
 
@@ -177,8 +184,11 @@ Signals are defined in Rust and connected in QML (e.g., `onResultsReady`, `onEng
 The context menu (`context_menu.cpp`) provides Dolphin-like file operations:
 - Open / Open With (reads from `mimeapps.list`)
 - Cut, Copy, Copy Location
+- Duplicate Here
 - Rename, Delete, Move to Trash
+- Move to New Folder
 - Open Terminal Here
+- Open as Administrator
 - Compress (ZIP, TAR.GZ)
 - Properties (via freedesktop FileManager1 DBus interface)
 
