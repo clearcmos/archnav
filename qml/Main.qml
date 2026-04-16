@@ -20,6 +20,7 @@ ApplicationWindow {
     }
 
     property bool previewVisible: false
+    property bool helpVisible: false
     property int currentSortIndex: 0  // 0=MtimeDesc, 1=MtimeAsc, 2=NameAsc, 3=NameDesc, 4=SizeDesc, 5=SizeAsc, 6=PathAsc, 7=Frecency
     property bool frecencyMode: false  // When true, sort by frecency (most used first)
 
@@ -440,6 +441,12 @@ ApplicationWindow {
         onActivated: toggleFrecency()
     }
 
+    // Help overlay
+    Shortcut {
+        sequence: "F1"
+        onActivated: helpVisible = !helpVisible
+    }
+
     // Zoom controls
     Shortcut {
         sequence: "Ctrl+="
@@ -461,6 +468,120 @@ ApplicationWindow {
     Component.onCompleted: {
         searchBar.forceActiveFocus()
         engine.initialize()
+    }
+
+    // Help overlay - press F1 to toggle, any key to dismiss
+    Rectangle {
+        id: helpOverlay
+        anchors.fill: parent
+        color: Qt.rgba(0, 0, 0, 0.6)
+        visible: helpVisible
+        z: 100
+
+        MouseArea {
+            anchors.fill: parent
+            onClicked: helpVisible = false
+        }
+
+        // Catch any key to dismiss
+        Keys.onPressed: function(event) {
+            if (event.key !== Qt.Key_F1) {
+                helpVisible = false
+                event.accepted = true
+            }
+        }
+
+        focus: helpVisible
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.round(520 * Style.zoomFactor)
+            height: helpColumn.height + Math.round(48 * Style.zoomFactor)
+            color: Style.bgPrimary
+            border.color: Style.borderDefault
+            border.width: 1
+            radius: Math.round(8 * Style.zoomFactor)
+
+            ColumnLayout {
+                id: helpColumn
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.margins: Math.round(24 * Style.zoomFactor)
+                spacing: Math.round(16 * Style.zoomFactor)
+
+                Label {
+                    text: "Keyboard Shortcuts"
+                    color: Style.textPrimary
+                    font.pixelSize: Style.fontSizeLarge
+                    font.bold: true
+                    Layout.alignment: Qt.AlignHCenter
+                }
+
+                GridLayout {
+                    columns: 2
+                    columnSpacing: Math.round(24 * Style.zoomFactor)
+                    rowSpacing: Math.round(6 * Style.zoomFactor)
+                    Layout.fillWidth: true
+
+                    // Navigation
+                    Label { text: "Up / Down"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Navigate results"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "Enter"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Open file or folder"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "Ctrl+O"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Open containing folder"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "Right-click"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Context menu"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    // Separator
+                    Item { Layout.columnSpan: 2; Layout.preferredHeight: Math.round(4 * Style.zoomFactor) }
+
+                    // View
+                    Label { text: "Ctrl+P"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Toggle preview pane"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "Ctrl+Shift+F"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Toggle frecency sort"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "Ctrl+R"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Rescan all bookmarks"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    // Separator
+                    Item { Layout.columnSpan: 2; Layout.preferredHeight: Math.round(4 * Style.zoomFactor) }
+
+                    // Zoom
+                    Label { text: "Ctrl+= / Ctrl+-"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Zoom in / out"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "Ctrl+0"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Reset zoom"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "Ctrl+Scroll"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Zoom in / out"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    // Separator
+                    Item { Layout.columnSpan: 2; Layout.preferredHeight: Math.round(4 * Style.zoomFactor) }
+
+                    // Window
+                    Label { text: "Esc"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Hide to tray"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "F1"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Toggle this help"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+                }
+
+                Label {
+                    text: "Press any key to close"
+                    color: Style.textDim
+                    font.pixelSize: Style.fontSizeSmall
+                    Layout.alignment: Qt.AlignHCenter
+                }
+            }
+        }
     }
 
     // HeaderButton component for clickable column headers

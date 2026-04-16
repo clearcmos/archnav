@@ -130,6 +130,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 | `Ctrl+-` | Zoom out |
 | `Ctrl+0` | Reset zoom |
 | `Esc` | Hide to tray |
+| `F1` | Toggle keyboard shortcuts help |
 | `Right-click` | Context menu |
 
 ## Data Locations
