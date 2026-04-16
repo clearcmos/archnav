@@ -93,9 +93,28 @@ impl CoreEngine {
                 Err(e) => warn!("Failed to load index from database: {}", e),
             }
 
-            // Set bookmarks if none loaded from DB
+            // Merge config bookmarks with DB bookmarks:
+            // - Config is the source of truth for which bookmarks should exist
+            // - Add any config bookmarks missing from DB
+            // - Remove any DB bookmarks not in config
             if idx.bookmarks.is_empty() {
                 idx.bookmarks = bookmarks;
+            } else {
+                // Add new bookmarks from config that aren't in DB
+                for bm in &bookmarks {
+                    if !idx.bookmarks.iter().any(|b| b.name == bm.name) {
+                        info!("Adding new bookmark from config: {} -> {}", bm.name, bm.path);
+                        idx.bookmarks.push(bm.clone());
+                    }
+                }
+                // Remove DB bookmarks that are no longer in config
+                idx.bookmarks.retain(|b| {
+                    let keep = bookmarks.iter().any(|cb| cb.name == b.name);
+                    if !keep {
+                        info!("Removing bookmark not in config: {}", b.name);
+                    }
+                    keep
+                });
             }
         }
 
