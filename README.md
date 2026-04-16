@@ -48,13 +48,13 @@ cargo run -- --toggle
 
 ## Installation
 
-Copy the release binary and desktop file:
+Install as an Arch package via the bundled PKGBUILD:
 
 ```bash
-cargo build --release
-install -Dm755 target/release/archnav /usr/local/bin/archnav
-install -Dm644 data/archnav.desktop /usr/share/applications/archnav.desktop
+makepkg -si
 ```
+
+This installs `archnav` to `/usr/bin/`, registers the desktop file, and ships the icon under `hicolor/scalable/apps/`. The package is tracked by pacman as `archnav-git`.
 
 ## Usage
 
