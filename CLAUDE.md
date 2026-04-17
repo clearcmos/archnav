@@ -78,9 +78,13 @@ RUST_LOG=archnav=debug cargo run
 
 ## Dependencies
 
-Runtime: `qt6-base qt6-declarative qt6-quickcontrols2 kio kservice kcoreaddons ffmpeg poppler xdg-utils dolphin systemsettings p7zip`
+Runtime: `qt6-base qt6-declarative kio kservice kcoreaddons ffmpeg poppler xdg-utils dolphin systemsettings p7zip`
 
 Build: `rust pkg-config`
+
+## Packaging
+
+A root-level `PKGBUILD` (`pkgname=archnav-git`) pulls from the github remote, builds with `cargo build --release --locked`, and installs the binary, desktop file, and icon. `options=('!lto')` is required: makepkg's default `-flto=auto` in `CFLAGS` produces GCC LTO bitcode in C/C++ objects that rust-lld cannot resolve. Rust-side LTO stays on via `[profile.release] lto = true`.
 
 ## Key Technologies
 

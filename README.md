@@ -23,7 +23,7 @@ Fast, keyboard-centric file navigator for KDE Wayland with instant trigram-index
 Install from the Arch repos:
 
 ```bash
-pacman -S qt6-base qt6-declarative qt6-quickcontrols2 kio kservice kcoreaddons
+pacman -S qt6-base qt6-declarative kio kservice kcoreaddons
 pacman -S ffmpeg poppler xdg-utils dolphin systemsettings p7zip
 ```
 
