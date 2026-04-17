@@ -23,6 +23,7 @@ makedepends=(git
              pkg-config)
 provides=('archnav')
 conflicts=('archnav')
+options=('!lto')
 source=("$pkgname::git+https://github.com/clearcmos/archnav.git")
 sha256sums=('SKIP')
 
