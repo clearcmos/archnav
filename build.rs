@@ -96,6 +96,9 @@ fn main() {
             // Add OUT_DIR for MOC-generated files
             cc.include(&out_dir);
 
+            // Third-party headers go in via -isystem so GCC suppresses warnings
+            // from them (e.g. KIO's `enum CacheControl` attribute placement).
+            // Our own code under src/ stays on -I so its warnings still surface.
             // Add QtQmlIntegration include path for MOC
             if let Ok(output) = Command::new("pkg-config")
                 .args(["--variable=includedir", "Qt6QmlIntegration"])
@@ -103,21 +106,21 @@ fn main() {
             {
                 let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path.is_empty() {
-                    cc.include(&path);
-                    cc.include(format!("{}/QtQmlIntegration", path));
+                    cc.flag(&format!("-isystem{}", path));
+                    cc.flag(&format!("-isystem{}/QtQmlIntegration", path));
                 }
             }
 
             // KDE Frameworks 6 include paths (standard system locations on Arch)
             let kf6_include = "/usr/include/KF6";
-            cc.include(kf6_include);
+            cc.flag(&format!("-isystem{}", kf6_include));
             for subdir in [
                 "KService", "KIOCore", "KIOGui", "KIO",
                 "KCoreAddons", "KConfig", "KConfigCore",
             ] {
                 let path = format!("{}/{}", kf6_include, subdir);
                 if std::path::Path::new(&path).is_dir() {
-                    cc.include(&path);
+                    cc.flag(&format!("-isystem{}", path));
                 }
             }
 
