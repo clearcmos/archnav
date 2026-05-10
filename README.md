@@ -82,6 +82,7 @@ This installs `archnav` to `/usr/bin/`, registers the desktop file, and ships th
 - **Glob**: `foo*bar` - glob pattern (contains `*` or `?`)
 - **Fuzzy**: `~confg` - fuzzy match with typo tolerance (prefix with `~`)
 - **Path-aware**: `src/config` - match "config" under a "src" directory
+- **Folders only**: `folder:movies` or `folder: movies` - restrict results to directories (substring match)
 
 ### System Tray
 

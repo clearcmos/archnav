@@ -479,6 +479,33 @@ impl TrigramIndex {
                     .find(|&&bp| entry.path.starts_with(bp))
                     .and_then(|bp| bookmark_map.get(bp).copied())?;
 
+                // File type mode filter
+                match query.file_type_mode {
+                    FileTypeMode::All => {}
+                    FileTypeMode::GotoDir => {
+                        if !entry.is_dir {
+                            return None;
+                        }
+                    }
+                    FileTypeMode::GotoFile => {
+                        if entry.is_dir {
+                            return None;
+                        }
+                    }
+                    FileTypeMode::Edit => {
+                        if entry.is_dir {
+                            return None;
+                        }
+                        if let Some(ext) =
+                            Path::new(&entry.path).extension().and_then(|e| e.to_str())
+                        {
+                            if BINARY_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                                return None;
+                            }
+                        }
+                    }
+                }
+
                 // Extension filter
                 if let Some(ref ext_filter) = query.extension_filter {
                     if let Some(ext) =

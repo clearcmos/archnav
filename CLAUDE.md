@@ -23,7 +23,7 @@ src/
 │   ├── scanner.rs       # Directory scanner using walkdir
 │   ├── watcher.rs       # inotify file watcher for real-time updates
 │   ├── integrity.rs     # Periodic integrity checker + network scanner
-│   └── query.rs         # Query parsing (*.ext, /regex, glob, ~fuzzy, path/aware)
+│   └── query.rs         # Query parsing (*.ext, /regex, glob, ~fuzzy, path/aware, folder:)
 ├── preview/             # Preview generators
 │   ├── text.rs          # Text file preview (with size limit)
 │   ├── media.rs         # Audio/video metadata via ffprobe
@@ -118,6 +118,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 - **Regex search**: `/pattern` for regex matching
 - **Fuzzy search**: `~query` for typo-tolerant matching
 - **Path-aware search**: `src/config` to match files under specific directories
+- **Folders-only filter**: `folder:movies` or `folder: movies` to restrict to directories
 - **Extension filtering**: `*.py query` to filter by file extension
 - **Sort options**: Recent, Oldest, Name A-Z/Z-A, Largest, Smallest, Path
 - **Smart previews**: Text, images, audio/video metadata, archive contents

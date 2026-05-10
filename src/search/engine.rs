@@ -238,9 +238,15 @@ impl CoreEngine {
         if let Some((cached_query, cached_results)) = cache_hit_data {
             // Filter cached results instead of full search
             let query = ParsedQuery::parse(raw_query, sort_order);
+            let dirs_only = query.dirs_only();
             let results: Vec<SearchAllResult> = cached_results
                 .iter()
-                .filter(|r| query.matches_path(&r.path))
+                .filter(|r| {
+                    if dirs_only && !r.is_dir {
+                        return false;
+                    }
+                    query.matches_path(&r.path)
+                })
                 .cloned()
                 .collect();
 

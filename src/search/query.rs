@@ -176,18 +176,30 @@ impl ParsedQuery {
     /// Parse a raw query string with optional extension filter.
     ///
     /// Syntax:
-    ///   "query"                — substring search across all locations
-    ///   "*.py query"           — filter by extension (position-independent)
-    ///   "query *.py"           — same as above
-    ///   "/regex"               — regex search (prefix with /)
-    ///   "foo*bar"              — glob pattern (contains * or ?)
-    ///   "src/config"           — path-aware search (matches "config" under "src")
+    ///   "query"                - substring search across all locations
+    ///   "*.py query"           - filter by extension (position-independent)
+    ///   "query *.py"           - same as above
+    ///   "/regex"               - regex search (prefix with /)
+    ///   "foo*bar"              - glob pattern (contains * or ?)
+    ///   "src/config"           - path-aware search (matches "config" under "src")
+    ///   "folder:movies"        - restrict to directories only (substring match)
     pub fn parse(raw: &str, sort_order: SortOrder) -> Self {
         let mut extension_filter: Option<String> = None;
         let mut path_segments: Option<Vec<String>> = None;
 
+        // Strip "folder:" prefix (case-insensitive, with optional whitespace after).
+        // Restricts results to directories only.
+        let raw_trimmed = raw.trim();
+        let (file_type_mode, raw_effective) = if raw_trimmed.len() >= 7
+            && raw_trimmed[..7].eq_ignore_ascii_case("folder:")
+        {
+            (FileTypeMode::GotoDir, raw_trimmed[7..].trim_start())
+        } else {
+            (FileTypeMode::All, raw_trimmed)
+        };
+
         // Split into tokens and find extension filter anywhere in query
-        let tokens: Vec<&str> = raw.trim().split_whitespace().collect();
+        let tokens: Vec<&str> = raw_effective.split_whitespace().collect();
         let mut query_tokens: Vec<&str> = Vec::new();
 
         for token in tokens {
@@ -212,7 +224,7 @@ impl ParsedQuery {
                     max_distance,
                 },
                 extension_filter,
-                file_type_mode: FileTypeMode::All,
+                file_type_mode,
                 sort_order,
                 path_segments: None,
             };
@@ -242,7 +254,7 @@ impl ParsedQuery {
                 return Self {
                     mode: QueryMode::Substring(search_term),
                     extension_filter,
-                    file_type_mode: FileTypeMode::All,
+                    file_type_mode,
                     sort_order,
                     path_segments,
                 };
@@ -273,10 +285,15 @@ impl ParsedQuery {
         Self {
             mode,
             extension_filter,
-            file_type_mode: FileTypeMode::All,
+            file_type_mode,
             sort_order,
             path_segments,
         }
+    }
+
+    /// Whether this query restricts results to directories only.
+    pub fn dirs_only(&self) -> bool {
+        matches!(self.file_type_mode, FileTypeMode::GotoDir)
     }
 
     /// Check if a path matches the path segment pattern.
@@ -396,6 +413,48 @@ mod tests {
 
         // Should not match: "src" comes after "main"
         assert!(!q.matches_path_segments("/home/user/main/src/file.rs"));
+    }
+
+    #[test]
+    fn test_parse_folder_prefix_no_space() {
+        let q = ParsedQuery::parse("folder:movies", SortOrder::MtimeDesc);
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "movies"));
+        assert_eq!(q.file_type_mode, FileTypeMode::GotoDir);
+    }
+
+    #[test]
+    fn test_parse_folder_prefix_with_space() {
+        let q = ParsedQuery::parse("folder: movies", SortOrder::MtimeDesc);
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "movies"));
+        assert_eq!(q.file_type_mode, FileTypeMode::GotoDir);
+    }
+
+    #[test]
+    fn test_parse_folder_prefix_case_insensitive() {
+        let q = ParsedQuery::parse("Folder:Movies", SortOrder::MtimeDesc);
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "Movies"));
+        assert_eq!(q.file_type_mode, FileTypeMode::GotoDir);
+    }
+
+    #[test]
+    fn test_parse_folder_prefix_only() {
+        let q = ParsedQuery::parse("folder:", SortOrder::MtimeDesc);
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s.is_empty()));
+        assert_eq!(q.file_type_mode, FileTypeMode::GotoDir);
+    }
+
+    #[test]
+    fn test_parse_folder_prefix_with_extension() {
+        let q = ParsedQuery::parse("folder:foo *.bar", SortOrder::MtimeDesc);
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "foo"));
+        assert_eq!(q.extension_filter, Some("bar".to_string()));
+        assert_eq!(q.file_type_mode, FileTypeMode::GotoDir);
+    }
+
+    #[test]
+    fn test_parse_no_folder_prefix() {
+        let q = ParsedQuery::parse("movies", SortOrder::MtimeDesc);
+        assert_eq!(q.file_type_mode, FileTypeMode::All);
     }
 
     #[test]
