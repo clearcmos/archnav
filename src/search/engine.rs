@@ -8,7 +8,7 @@ use tracing::{info, warn, debug};
 
 use super::database::{Database, DbOp, start_db_thread};
 use super::integrity::{start_integrity_checker, start_network_scanner};
-use super::query::{ParsedQuery, SortOrder};
+use super::query::{ParsedQuery, QueryMode, SortOrder};
 use super::scanner::{scan_directory, reconcile_directory};
 use super::trigram::{Bookmark, SearchAllResult, TrigramIndex};
 use super::watcher::start_watcher;
@@ -28,42 +28,48 @@ struct SearchCache {
 
 impl SearchCache {
     /// Check if this cache can be used for a new query.
-    /// Valid if: new query starts with cached query, same sort order, fresh enough,
-    /// AND results weren't truncated (otherwise filtering might miss matches).
+    /// Valid only if every result of the new query must be present in the cached
+    /// result set. We compare the *parsed* form of both queries, not raw strings,
+    /// because prefixes like `folder:` change parse semantics rather than extending
+    /// the substring (e.g. `folder` -> `folder:mar` is NOT a refinement: the new
+    /// substring is "mar", not "folder:mar", and the file-type filter changed).
     fn is_valid_for(&self, new_query: &str, new_sort: SortOrder) -> bool {
-        // Can't use truncated cache - refinement might miss results
+        // Can't use truncated cache - refinement might miss matches
         if self.was_truncated {
             return false;
         }
-
-        // Don't cache fuzzy queries - the edit distance threshold changes with length
-        // so cached results for "~abc" aren't valid for "~abcd"
-        if new_query.starts_with('~') || self.query.starts_with('~') {
-            return false;
-        }
-
-        // Don't use cache when wildcards are involved - parsing semantics change
-        // e.g., "marois *" is a glob, but "marois *.pdf" is substring + extension filter
-        if self.query.contains('*') || self.query.contains('?') {
-            return false;
-        }
-
-        // Must be same sort order
         if self.sort_order != new_sort {
             return false;
         }
-
-        // Cache must be fresh (within 5 seconds)
         if self.timestamp.elapsed() > Duration::from_secs(5) {
             return false;
         }
 
-        // New query must start with cached query (refinement)
-        let cached_lower = self.query.to_lowercase();
-        let new_lower = new_query.to_lowercase();
+        let old = ParsedQuery::parse(&self.query, self.sort_order);
+        let new = ParsedQuery::parse(new_query, new_sort);
 
-        // Must be a strict extension (not same query, not shorter)
-        new_lower.starts_with(&cached_lower) && new_lower.len() > cached_lower.len()
+        // Filter dimensions must match exactly. Allowing different file-type or
+        // extension filters could expand the result set beyond the cached subset.
+        if old.file_type_mode != new.file_type_mode {
+            return false;
+        }
+        if old.extension_filter != new.extension_filter {
+            return false;
+        }
+        if old.path_segments != new.path_segments {
+            return false;
+        }
+
+        // Refinement only makes sense when both sides do substring search.
+        // Fuzzy thresholds shift with length; glob/regex don't string-extend.
+        match (&old.mode, &new.mode) {
+            (QueryMode::Substring(old_sub), QueryMode::Substring(new_sub)) => {
+                // Every path containing `new_sub` must also contain `old_sub`.
+                // That holds iff `new_sub` contains `old_sub` as a substring.
+                new_sub.to_lowercase().contains(&old_sub.to_lowercase())
+            }
+            _ => false,
+        }
     }
 }
 
@@ -447,5 +453,73 @@ impl CoreEngine {
             }
         }
         results.len()
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn cache(query: &str) -> SearchCache {
+        SearchCache {
+            query: query.to_string(),
+            sort_order: SortOrder::MtimeDesc,
+            results: Vec::new(),
+            timestamp: Instant::now(),
+            seq: 0,
+            was_truncated: false,
+        }
+    }
+
+    #[test]
+    fn refine_substring_extension_is_valid() {
+        let c = cache("mar");
+        assert!(c.is_valid_for("marilyn", SortOrder::MtimeDesc));
+    }
+
+    #[test]
+    fn folder_prefix_after_substring_is_invalid() {
+        // Bug repro: typing "folder" then "folder:mar" must NOT reuse cache,
+        // because the new query's substring is "mar" (not "folder:mar") and
+        // the file-type filter changed.
+        let c = cache("folder");
+        assert!(!c.is_valid_for("folder:mar", SortOrder::MtimeDesc));
+    }
+
+    #[test]
+    fn refine_within_folder_prefix_is_valid() {
+        let c = cache("folder:");
+        assert!(c.is_valid_for("folder:mar", SortOrder::MtimeDesc));
+    }
+
+    #[test]
+    fn extending_within_folder_prefix_is_valid() {
+        let c = cache("folder:mar");
+        assert!(c.is_valid_for("folder:marilyn", SortOrder::MtimeDesc));
+    }
+
+    #[test]
+    fn shrinking_query_is_invalid() {
+        let c = cache("folder:marilyn");
+        assert!(!c.is_valid_for("folder:maril", SortOrder::MtimeDesc));
+    }
+
+    #[test]
+    fn dropping_folder_prefix_is_invalid() {
+        let c = cache("folder:mar");
+        assert!(!c.is_valid_for("mar", SortOrder::MtimeDesc));
+    }
+
+    #[test]
+    fn truncated_cache_is_invalid() {
+        let mut c = cache("mar");
+        c.was_truncated = true;
+        assert!(!c.is_valid_for("marilyn", SortOrder::MtimeDesc));
+    }
+
+    #[test]
+    fn different_sort_is_invalid() {
+        let c = cache("mar");
+        assert!(!c.is_valid_for("marilyn", SortOrder::NameAsc));
     }
 }
