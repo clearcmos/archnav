@@ -84,7 +84,9 @@ Build: `rust pkg-config`
 
 ## Packaging
 
-A root-level `PKGBUILD` (`pkgname=archnav-git`) pulls from the github remote, builds with `cargo build --release --locked`, and installs the binary, desktop file, and icon. `options=('!lto')` is required: makepkg's default `-flto=auto` in `CFLAGS` produces GCC LTO bitcode in C/C++ objects that rust-lld cannot resolve. Rust-side LTO stays on via `[profile.release] lto = true`.
+A root-level `PKGBUILD` (`pkgname=archnav-git`) pulls from the github remote, builds with `cargo build --release --locked`, and installs the binary, desktop file, and icon. `options=('!lto' '!debug')` is required:
+- `!lto`: makepkg's default `-flto=auto` in `CFLAGS` produces GCC LTO bitcode in C/C++ objects that rust-lld cannot resolve. Rust-side LTO stays on via `[profile.release] lto = true`.
+- `!debug`: the cargo release profile produces a stripped binary, so makepkg's debug-package split is empty and `gdb-add-index` errors out trying to index symbols that don't exist.
 
 ## Key Technologies
 

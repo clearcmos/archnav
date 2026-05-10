@@ -185,7 +185,7 @@ fn main() {
 
     let mut engine = QQmlApplicationEngine::new();
 
-    if let Some(mut engine) = engine.as_mut() {
+    if let Some(engine) = engine.as_mut() {
         // Load QML from embedded QRC resources
         let url_str = "qrc:/qt/qml/org/archnav/app/qml/Main.qml";
         tracing::info!("Loading QML from: {}", url_str);

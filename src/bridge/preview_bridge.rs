@@ -1,3 +1,6 @@
+// Qt signals are camelCase by convention; cxx-qt mirrors them in generated methods.
+#![allow(non_snake_case)]
+
 #[cxx_qt::bridge]
 pub mod qobject {
     unsafe extern "C++" {
