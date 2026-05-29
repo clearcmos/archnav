@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection};
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::time::Instant;
 use std::{fs, thread};
@@ -27,8 +28,12 @@ pub struct Database {
 impl Database {
     pub fn open() -> rusqlite::Result<Self> {
         let home = dirs::home_dir().expect("No home directory");
-        let db_path = home.join(DB_PATH);
+        Self::open_at(home.join(DB_PATH))
+    }
 
+    /// Open (or create) the database at an explicit path. Split out from `open`
+    /// so tests can run against a temporary database instead of the real one.
+    fn open_at(db_path: PathBuf) -> rusqlite::Result<Self> {
         if let Some(parent) = db_path.parent() {
             fs::create_dir_all(parent).ok();
         }
@@ -182,6 +187,28 @@ impl Database {
             return Ok(None);
         }
 
+        // The posting-list cache only covers files with id < this high-water mark
+        // (it is only rewritten on a full rebuild). We need it to know which files
+        // were added since the cache was built so we can backfill their trigrams
+        // below. If it's absent (a cache from before this was tracked), fall back
+        // to a full rebuild, which repopulates it.
+        let cached_next_id: u32 = match self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'posting_lists_next_id'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|s| s.parse().ok())
+        {
+            Some(n) => n,
+            None => {
+                info!("Posting list cache missing next_id high-water mark, rebuilding");
+                return Ok(None);
+            }
+        };
+
         if count_diff > 0 {
             debug!(
                 "Posting list cache slightly stale (diff={}), using anyway",
@@ -240,6 +267,42 @@ impl Database {
                 index.trigrams.insert(trigram, ids);
                 pl_count += 1;
             }
+        }
+
+        // Backfill trigrams for files added after this cache was built. Such files
+        // (id >= cached_next_id) live in `files`/`file_trigrams` but are missing
+        // from the cached posting lists, so without this they show up in all-file
+        // listings (e.g. `*.mkv`) yet are invisible to substring/trigram search,
+        // and a rescan can't repair it because TrigramIndex::add() skips known
+        // paths. file_trigrams is kept in sync with files, so it is authoritative.
+        let mut backfilled = 0usize;
+        {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT file_id, trigrams FROM file_trigrams WHERE file_id >= ?1")?;
+            let rows = stmt.query_map(params![cached_next_id], |row| {
+                Ok((row.get::<_, u32>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })?;
+            for row in rows {
+                let (file_id, blob) = row?;
+                if !index.files.contains_key(&file_id) {
+                    continue; // dangling trigram row for an already-removed file
+                }
+                for chunk in blob.chunks_exact(3) {
+                    index
+                        .trigrams
+                        .entry([chunk[0], chunk[1], chunk[2]])
+                        .or_default()
+                        .insert(file_id);
+                }
+                backfilled += 1;
+            }
+        }
+        if backfilled > 0 {
+            info!(
+                "Backfilled trigrams for {} file(s) added since cache (id >= {})",
+                backfilled, cached_next_id
+            );
         }
 
         // Load bookmarks
@@ -379,6 +442,15 @@ impl Database {
         tx.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES ('posting_lists_count', ?1)",
             params![index.file_count().to_string()],
+        )?;
+
+        // Store the next_id high-water mark. Every file currently indexed has
+        // id < next_id and is represented in these posting lists, so on the next
+        // fast load any file with id >= this value was added afterward and must
+        // have its trigrams backfilled (see try_load_fast).
+        tx.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('posting_lists_next_id', ?1)",
+            params![index.next_id.to_string()],
         )?;
 
         tx.commit()?;
@@ -556,4 +628,82 @@ pub fn start_db_thread(db: Database) -> Sender<DbOp> {
     });
 
     tx
+}
+
+#[cfg(test)]
+mod fast_load_tests {
+    use super::*;
+    use crate::search::query::{ParsedQuery, SortOrder};
+    use crate::search::trigram::{Bookmark, TrigramIndex};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn temp_db_path() -> PathBuf {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!("archnav_fastload_{}_{}.db", std::process::id(), n))
+    }
+
+    fn cleanup(path: &PathBuf) {
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(format!("{}-wal", path.display()));
+        let _ = fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    /// Regression test: a file added after the posting-list cache was built (so it
+    /// is in `files`/`file_trigrams` but not in the cached posting lists) must still
+    /// be found by substring search after a fast load.
+    #[test]
+    fn fast_load_backfills_files_added_after_cache() {
+        let path = temp_db_path();
+        cleanup(&path);
+
+        // Build an index with one file; persist files + per-file trigrams + cache.
+        {
+            let db = Database::open_at(path.clone()).unwrap();
+            let mut idx = TrigramIndex::new();
+            idx.bookmarks.push(Bookmark {
+                name: "t".into(),
+                path: "/data".into(),
+                is_network: false,
+            });
+            db.save_bookmark(&idx.bookmarks[0]);
+
+            let (id, tris) = idx.add("/data/alpha.txt".into(), false, 1, 1);
+            db.save_file(idx.files.get(&id).unwrap(), &tris);
+            db.save_posting_lists(&idx).unwrap();
+        }
+
+        // Simulate an incremental add (e.g. inotify/network scan): writes files +
+        // file_trigrams for a higher id, but intentionally does NOT rewrite the
+        // posting-list cache. This is exactly the real-world drift that hid the file.
+        {
+            let db = Database::open_at(path.clone()).unwrap();
+            let mut idx = TrigramIndex::new();
+            db.load_into_index(&mut idx).unwrap();
+            let (id, tris) = idx.add("/data/A Man Called Otto.mkv".into(), false, 2, 2);
+            db.save_file(idx.files.get(&id).unwrap(), &tris);
+        }
+
+        // A fresh fast load must still surface the file added after the cache.
+        {
+            let db = Database::open_at(path.clone()).unwrap();
+            let mut idx = TrigramIndex::new();
+            db.load_into_index(&mut idx).unwrap();
+
+            let q = ParsedQuery::parse("otto", SortOrder::MtimeDesc);
+            let results = idx.search_all(&q, &[]);
+            assert!(
+                results.iter().any(|r| r.path.ends_with("Otto.mkv")),
+                "substring search must find a file added after the posting-list cache was built"
+            );
+
+            // And the extension-filtered form the user actually typed.
+            let q = ParsedQuery::parse("otto *.mkv", SortOrder::MtimeDesc);
+            let results = idx.search_all(&q, &[]);
+            assert_eq!(results.len(), 1, "`otto *.mkv` must match exactly the backfilled file");
+        }
+
+        cleanup(&path);
+    }
 }
