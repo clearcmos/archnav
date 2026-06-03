@@ -69,6 +69,9 @@ cargo run
 # Toggle existing instance (or start new one)
 cargo run -- --toggle
 
+# Start hidden in the tray, preloading the index (used by the login autostart entry)
+cargo run -- --hidden
+
 # Build release
 cargo build --release
 
@@ -120,7 +123,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 - **Regex search**: `/pattern` for regex matching
 - **Fuzzy search**: `~query` for typo-tolerant matching
 - **Path-aware search**: `src/config` to match files under specific directories
-- **Folders-only filter**: `folder:movies` or `folder: movies` to restrict to directories
+- **Folders-only filter**: `folder:movies` or `folder: movies` to show directories whose own name matches (folders nested under a matching directory are excluded)
 - **Extension filtering**: `*.py query` to filter by file extension
 - **Sort options**: Recent, Oldest, Name A-Z/Z-A, Largest, Smallest, Path
 - **Smart previews**: Text, images, audio/video metadata, archive contents

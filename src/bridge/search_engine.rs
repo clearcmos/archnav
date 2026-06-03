@@ -39,6 +39,11 @@ pub mod qobject {
         #[qinvokable]
         fn initialize(self: Pin<&mut SearchEngine>);
 
+        // True if launched with --hidden; QML reads this to decide whether to
+        // show the window at startup or stay minimized in the tray.
+        #[qinvokable]
+        fn start_hidden(self: &SearchEngine) -> bool;
+
         // Search
         #[qinvokable]
         fn search(self: Pin<&mut SearchEngine>, query: QString, sort_index: i32);
@@ -196,6 +201,13 @@ impl qobject::SearchEngine {
                 ));
             });
         });
+    }
+
+    /// Whether the app was launched with --hidden (start minimized to the tray
+    /// instead of showing the window). Read by QML at startup. Backed by the
+    /// ARCHNAV_START_HIDDEN env var set in main() before any threads spawn.
+    fn start_hidden(&self) -> bool {
+        std::env::var_os("ARCHNAV_START_HIDDEN").is_some()
     }
 
     /// Perform a search in a background thread. Emits results_ready when done.

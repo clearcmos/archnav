@@ -158,6 +158,15 @@ fn main() {
 
     tracing::info!("archnav v0.1.0 starting");
 
+    // Start hidden (minimized to tray) when requested. The login autostart entry
+    // uses this so the index preloads at boot and lives in the tray without ever
+    // popping the window. QML reads the flag via SearchEngine::start_hidden().
+    // Set here, before any threads spawn or QML loads, so the read is race-free.
+    if args.iter().any(|a| a == "--hidden") {
+        std::env::set_var("ARCHNAV_START_HIDDEN", "1");
+        tracing::info!("Starting hidden (minimized to tray)");
+    }
+
     // Create Qt application (QApplication for QtWidgets support - needed for context menus)
     unsafe { create_qapplication(); }
 

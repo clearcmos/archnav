@@ -9,7 +9,9 @@ ApplicationWindow {
     id: root
     width: 1000
     height: 700
-    visible: true
+    // Shown explicitly in Component.onCompleted unless launched with --hidden,
+    // so the autostart instance can preload the index and sit in the tray.
+    visible: false
     title: "archnav"
     color: Style.bgPrimary
 
@@ -466,8 +468,14 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
-        searchBar.forceActiveFocus()
         engine.initialize()
+        // In --hidden mode (login autostart), stay in the tray: the index still
+        // loads in the background and the toggle socket still comes up, but no
+        // window appears until the user toggles it.
+        if (!engine.start_hidden()) {
+            root.show()
+            searchBar.forceActiveFocus()
+        }
     }
 
     // Help overlay - press F1 to toggle, any key to dismiss
