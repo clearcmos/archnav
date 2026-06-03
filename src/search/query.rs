@@ -137,7 +137,9 @@ impl ParsedQuery {
                 if q.is_empty() {
                     return true;
                 }
-                path.to_lowercase().contains(&q.to_lowercase())
+                self.substring_haystack(path)
+                    .to_lowercase()
+                    .contains(&q.to_lowercase())
             }
             QueryMode::Regex(re) => re.is_match(path),
             QueryMode::Glob(matcher) => {
@@ -182,7 +184,7 @@ impl ParsedQuery {
     ///   "/regex"               - regex search (prefix with /)
     ///   "foo*bar"              - glob pattern (contains * or ?)
     ///   "src/config"           - path-aware search (matches "config" under "src")
-    ///   "folder:movies"        - restrict to directories only (substring match)
+    ///   "folder:movies"        - directories whose own name matches (not nested children)
     pub fn parse(raw: &str, sort_order: SortOrder) -> Self {
         let mut extension_filter: Option<String> = None;
         let mut path_segments: Option<Vec<String>> = None;
@@ -294,6 +296,24 @@ impl ParsedQuery {
     /// Whether this query restricts results to directories only.
     pub fn dirs_only(&self) -> bool {
         matches!(self.file_type_mode, FileTypeMode::GotoDir)
+    }
+
+    /// The text a substring query should be tested against for `path`.
+    ///
+    /// `folder:` (GotoDir) queries match the directory's own name only, so
+    /// `folder:tattoo` matches `.../tattoo` but not folders nested beneath it
+    /// like `.../tattoo/designs`. Every other mode matches the full path,
+    /// keeping normal search path-inclusive (typing `tattoo` still finds
+    /// anything living under a tattoo folder).
+    pub fn substring_haystack<'a>(&self, path: &'a str) -> &'a str {
+        if self.dirs_only() {
+            std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(path)
+        } else {
+            path
+        }
     }
 
     /// Check if a path matches the path segment pattern.
@@ -455,6 +475,31 @@ mod tests {
     fn test_parse_no_folder_prefix() {
         let q = ParsedQuery::parse("movies", SortOrder::MtimeDesc);
         assert_eq!(q.file_type_mode, FileTypeMode::All);
+    }
+
+    #[test]
+    fn test_folder_query_matches_name_not_ancestor() {
+        let q = ParsedQuery::parse("folder:tattoo", SortOrder::MtimeDesc);
+        // The folder itself matches: its own name contains the query.
+        assert!(q.matches_path("/home/u/Pictures/tattoo"));
+        assert!(q.matches_path("/home/u/Pictures/my-tattoo-ideas"));
+        // Folders nested under a matching ancestor must NOT match.
+        assert!(!q.matches_path("/home/u/Pictures/tattoo/designs"));
+        assert!(!q.matches_path("/home/u/Pictures/tattoo/designs/flash"));
+    }
+
+    #[test]
+    fn test_folder_query_name_match_is_case_insensitive() {
+        let q = ParsedQuery::parse("folder:Tattoo", SortOrder::MtimeDesc);
+        assert!(q.matches_path("/home/u/TATTOO"));
+        assert!(!q.matches_path("/home/u/TATTOO/inner"));
+    }
+
+    #[test]
+    fn test_non_folder_substring_stays_path_inclusive() {
+        // Regular (non-folder:) search still matches anywhere in the path.
+        let q = ParsedQuery::parse("tattoo", SortOrder::MtimeDesc);
+        assert!(q.matches_path("/home/u/tattoo/designs/photo.jpg"));
     }
 
     #[test]

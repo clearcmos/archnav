@@ -320,7 +320,10 @@ impl TrigramIndex {
                 if q.is_empty() {
                     return true;
                 }
-                path.to_lowercase().contains(&q.to_lowercase())
+                query
+                    .substring_haystack(path)
+                    .to_lowercase()
+                    .contains(&q.to_lowercase())
             }
             QueryMode::Regex(re) => re.is_match(path),
             QueryMode::Glob(matcher) => {
