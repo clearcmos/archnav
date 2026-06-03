@@ -53,7 +53,7 @@ fn main() {
         let cfg = config::AppConfig::load();
         let bookmarks = cfg.to_bookmarks();
         println!("Loading search index...");
-        let engine = search::engine::CoreEngine::new(bookmarks);
+        let engine = search::engine::CoreEngine::new(bookmarks, cfg.expanded_exclude_paths());
         println!("Indexed {} files\n", engine.file_count());
 
         // Run each query
@@ -76,7 +76,7 @@ fn main() {
         let bookmarks = cfg.to_bookmarks();
         println!("Loading search index...");
         let load_start = std::time::Instant::now();
-        let engine = search::engine::CoreEngine::new(bookmarks);
+        let engine = search::engine::CoreEngine::new(bookmarks, cfg.expanded_exclude_paths());
         let load_time = load_start.elapsed();
         let file_count = engine.file_count();
         println!("Loaded {} files in {:.2?}\n", file_count, load_time);

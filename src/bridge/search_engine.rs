@@ -181,7 +181,10 @@ impl qobject::SearchEngine {
                 bookmarks
             };
 
-            let engine = Arc::new(CoreEngine::new(default_bookmarks));
+            let engine = Arc::new(CoreEngine::new(
+                default_bookmarks,
+                config.expanded_exclude_paths(),
+            ));
             let file_count = engine.file_count() as i32;
             let bookmark_count = engine.bookmarks().len() as i32;
 

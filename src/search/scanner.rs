@@ -1,6 +1,6 @@
 use std::path::Path;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::UNIX_EPOCH;
 use std::{fs, time};
 use tracing::info;
@@ -8,6 +8,40 @@ use walkdir::WalkDir;
 
 use super::database::DbOp;
 use super::trigram::{FileEntry, TrigramIndex, EXCLUDE_PATTERNS};
+
+/// User-configured recursive exclude paths (absolute, already normalized:
+/// `~` expanded and trailing slashes trimmed). Installed once at startup via
+/// [`set_exclude_paths`] so every scan path - the initial scan, reconcile,
+/// network rescans, and the live inotify watcher - shares one source of truth.
+static USER_EXCLUDE_PATHS: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Install the user's recursive exclude paths. Call once, before any scanning.
+pub fn set_exclude_paths(paths: Vec<String>) {
+    let _ = USER_EXCLUDE_PATHS.set(paths);
+}
+
+/// Whether the user configured any exclude paths.
+pub fn has_user_excludes() -> bool {
+    USER_EXCLUDE_PATHS.get().map_or(false, |v| !v.is_empty())
+}
+
+/// True if `path` equals, or is nested recursively under, any exclude path.
+pub fn is_user_excluded(path: &str) -> bool {
+    USER_EXCLUDE_PATHS
+        .get()
+        .map_or(false, |excludes| path_under_any(path, excludes))
+}
+
+/// Pure matcher: is `path` one of `excludes`, or beneath one? The boundary
+/// check on the byte after the prefix keeps `/a/b` from matching exclude
+/// `/a/bc` (sibling) while still matching exclude `/a` (parent).
+fn path_under_any(path: &str, excludes: &[String]) -> bool {
+    let bytes = path.as_bytes();
+    excludes.iter().any(|b| {
+        path == b.as_str()
+            || (bytes.len() > b.len() && bytes[b.len()] == b'/' && path.starts_with(b.as_str()))
+    })
+}
 
 pub fn is_network_mount(path: &Path) -> bool {
     let path_str = path.to_string_lossy();
@@ -56,6 +90,11 @@ pub fn should_exclude(path: &Path) -> bool {
         if path_str.contains(&search) {
             return true;
         }
+    }
+
+    // User-configured recursive exclude paths from config.json.
+    if is_user_excluded(&path_str) {
+        return true;
     }
 
     false
@@ -176,4 +215,44 @@ pub fn reconcile_directory(
     }
 
     added
+}
+
+#[cfg(test)]
+mod tests {
+    use super::path_under_any;
+
+    fn excludes(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn excludes_exact_path_and_descendants() {
+        let ex = excludes(&["/home/u/Downloads"]);
+        assert!(path_under_any("/home/u/Downloads", &ex)); // the folder itself
+        assert!(path_under_any("/home/u/Downloads/a.zip", &ex)); // direct child
+        assert!(path_under_any("/home/u/Downloads/deep/nested/x", &ex)); // recursive
+    }
+
+    #[test]
+    fn does_not_exclude_siblings_sharing_a_prefix() {
+        let ex = excludes(&["/home/u/Down"]);
+        // "/home/u/Downloads" must NOT be excluded by the prefix "/home/u/Down".
+        assert!(!path_under_any("/home/u/Downloads", &ex));
+        assert!(!path_under_any("/home/u/Downloads/a", &ex));
+        // The exact "/home/u/Down" and its real children still match.
+        assert!(path_under_any("/home/u/Down", &ex));
+        assert!(path_under_any("/home/u/Down/file", &ex));
+    }
+
+    #[test]
+    fn does_not_exclude_unrelated_paths() {
+        let ex = excludes(&["/home/u/Downloads", "/mnt/scratch"]);
+        assert!(!path_under_any("/home/u/Documents/a", &ex));
+        assert!(!path_under_any("/mnt/data/x", &ex));
+    }
+
+    #[test]
+    fn empty_exclude_list_matches_nothing() {
+        assert!(!path_under_any("/anything/at/all", &[]));
+    }
 }

@@ -87,7 +87,14 @@ pub struct CoreEngine {
 
 impl CoreEngine {
     /// Create a new engine, load from database, start background threads.
-    pub fn new(bookmarks: Vec<Bookmark>) -> Self {
+    /// `exclude_paths` are recursive blacklist locations from config (already
+    /// normalized via `AppConfig::expanded_exclude_paths`).
+    pub fn new(bookmarks: Vec<Bookmark>, exclude_paths: Vec<String>) -> Self {
+        // Install the user's recursive exclude paths before anything scans, so
+        // the initial scan, reconcile, network rescans, and the watcher all
+        // skip them via the shared should_exclude chokepoint.
+        super::scanner::set_exclude_paths(exclude_paths);
+
         let db = Database::open().expect("Failed to open database");
         let index = Arc::new(RwLock::new(TrigramIndex::new()));
 
@@ -132,6 +139,32 @@ impl CoreEngine {
             let idx = index.read().unwrap();
             for bookmark in &idx.bookmarks {
                 let _ = db_tx.send(DbOp::SaveBookmark(bookmark.clone()));
+            }
+        }
+
+        // Drop any files indexed before their location was added to the exclude
+        // list. Going forward the scanner skips excluded paths, but entries
+        // indexed earlier still exist on disk, so the integrity checker won't
+        // clear them - purge them here so a new exclude takes effect on restart.
+        if super::scanner::has_user_excludes() {
+            let to_purge: Vec<String> = {
+                let idx = index.read().unwrap();
+                idx.files
+                    .values()
+                    .filter(|f| super::scanner::is_user_excluded(&f.path))
+                    .map(|f| f.path.clone())
+                    .collect()
+            };
+            if !to_purge.is_empty() {
+                info!(
+                    "Purging {} indexed files now covered by exclude_paths",
+                    to_purge.len()
+                );
+                let mut idx = index.write().unwrap();
+                for path in &to_purge {
+                    idx.remove(path);
+                    let _ = db_tx.send(DbOp::RemoveFile(path.clone()));
+                }
             }
         }
 

@@ -167,18 +167,32 @@ The search engine uses **trigram indexing** for instant substring matching:
     {"name": "home", "path": "/home/user", "is_network": false}
   ],
   "max_results": 500,
-  "toggle_hotkey": "Alt+`"
+  "toggle_hotkey": "Alt+`",
+  "exclude_paths": ["~/Downloads", "/mnt/scratch"]
 }
 ```
+
+`exclude_paths` is an optional list of locations to exclude from indexing,
+recursively. Entries are absolute paths with an optional leading `~` (home);
+a file is skipped if its path equals or sits under any entry. Edits take
+effect on restart - the scanner skips these going forward, and any files
+indexed before a path was added are purged on the next launch.
 
 Note: `toggle_hotkey` is stored for reference but global shortcuts must be configured manually in KDE System Settings.
 
 ## Exclude Patterns
 
-Hardcoded in `trigram.rs`:
+Built-in name patterns, hardcoded in `trigram.rs` (matched against any path
+component, so a dir of this name is skipped anywhere it appears):
 - `.git`, `node_modules`, `__pycache__`, `.cache`, `.npm`, `.cargo`
 - `target`, `build`, `dist`, `.next`, `.nuxt`
 - `.Trash`, `Trash`, `.steam`, `dosdevices`
+
+User-configurable recursive locations via `exclude_paths` in `config.json`
+(see Config Structure). Both feed the single `should_exclude` chokepoint in
+`scanner.rs`, which gates the initial scan, reconcile, network rescans, and the
+live inotify watcher. The user list is installed once at startup via
+`scanner::set_exclude_paths` and matched by `is_user_excluded`.
 
 ## QML/Rust Bridge
 

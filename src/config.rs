@@ -33,6 +33,11 @@ pub struct AppConfig {
     pub sort_order: i32,
     #[serde(default = "default_toggle_hotkey")]
     pub toggle_hotkey: String,
+    /// Locations to exclude from indexing, recursively. Absolute paths, with an
+    /// optional leading `~` for the home directory. A file is skipped if its
+    /// path equals or sits under any entry. Empty by default.
+    #[serde(default)]
+    pub exclude_paths: Vec<String>,
 }
 
 fn default_max_results() -> i32 {
@@ -71,6 +76,7 @@ impl Default for AppConfig {
             preview_visible: false,
             sort_order: 0,
             toggle_hotkey: default_toggle_hotkey(),
+            exclude_paths: Vec::new(),
         }
     }
 }
@@ -137,5 +143,61 @@ impl AppConfig {
                 is_network: b.is_network,
             })
             .collect()
+    }
+
+    /// Exclude paths normalized for matching: blanks dropped, a leading `~`
+    /// expanded to `$HOME`, and trailing slashes trimmed. The scanner compares
+    /// indexed paths against these, so they must be absolute and slash-clean.
+    pub fn expanded_exclude_paths(&self) -> Vec<String> {
+        let home = dirs::home_dir();
+        self.exclude_paths
+            .iter()
+            .filter_map(|raw| {
+                let p = raw.trim();
+                if p.is_empty() {
+                    return None;
+                }
+                let expanded = if p == "~" {
+                    home.as_ref()?.to_string_lossy().into_owned()
+                } else if let Some(rest) = p.strip_prefix("~/") {
+                    home.as_ref()?.join(rest).to_string_lossy().into_owned()
+                } else {
+                    p.to_string()
+                };
+                let trimmed = expanded.trim_end_matches('/');
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg_with(paths: &[&str]) -> AppConfig {
+        AppConfig {
+            exclude_paths: paths.iter().map(|s| s.to_string()).collect(),
+            ..AppConfig::default()
+        }
+    }
+
+    #[test]
+    fn expands_tilde_to_home() {
+        let home = dirs::home_dir().unwrap().to_string_lossy().into_owned();
+        let out = cfg_with(&["~/Downloads", "~"]).expanded_exclude_paths();
+        assert_eq!(out, vec![format!("{home}/Downloads"), home]);
+    }
+
+    #[test]
+    fn trims_trailing_slashes_and_blanks() {
+        let out = cfg_with(&["/mnt/scratch/", "  ", "/data//"]).expanded_exclude_paths();
+        assert_eq!(out, vec!["/mnt/scratch".to_string(), "/data".to_string()]);
+    }
+
+    #[test]
+    fn leaves_plain_absolute_paths_untouched() {
+        let out = cfg_with(&["/home/u/Videos"]).expanded_exclude_paths();
+        assert_eq!(out, vec!["/home/u/Videos".to_string()]);
     }
 }
