@@ -64,39 +64,65 @@ fn process_images(html: &str, base_dir: &str, content_width: u32) -> String {
     result
 }
 
-/// Preview a text file: read first 50KB, detect binary content.
+/// Preview a text file: read at most the first 50KB, detect binary content.
+/// Never reads the whole file; unknown extensions land here, and they can be
+/// multi-gigabyte blobs (.iso, disk images, logs).
 pub fn preview_text(path: &str) -> String {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            // Check if content looks binary (high ratio of non-printable bytes)
-            let check_len = bytes.len().min(512);
-            let non_printable = bytes[..check_len]
-                .iter()
-                .filter(|&&b| b == 0 || (b < 32 && b != b'\n' && b != b'\r' && b != b'\t'))
-                .count();
+    use std::io::Read;
 
-            if check_len > 0 && non_printable * 10 > check_len {
-                // Looks binary
-                let size = format_size(bytes.len() as u64);
-                return format!(
-                    "Binary file ({})\n\nThis file appears to contain binary data.",
-                    size
-                );
-            }
+    let file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => return format!("Unable to read file: {}", e),
+    };
+    let total_size = file.metadata().map(|m| m.len()).unwrap_or(0);
 
-            let limit = MAX_PREVIEW_BYTES.min(bytes.len());
-            let content = String::from_utf8_lossy(&bytes[..limit]);
+    let mut bytes = Vec::with_capacity(MAX_PREVIEW_BYTES.min(total_size as usize));
+    if let Err(e) = file.take(MAX_PREVIEW_BYTES as u64).read_to_end(&mut bytes) {
+        return format!("Unable to read file: {}", e);
+    }
 
-            if bytes.len() > MAX_PREVIEW_BYTES {
-                format!(
-                    "{}\n\n--- Truncated (showing 50KB of {}) ---",
-                    content,
-                    format_size(bytes.len() as u64)
-                )
-            } else {
-                content.to_string()
-            }
-        }
-        Err(e) => format!("Unable to read file: {}", e),
+    // Check if content looks binary (high ratio of non-printable bytes)
+    let check_len = bytes.len().min(512);
+    let non_printable = bytes[..check_len]
+        .iter()
+        .filter(|&&b| b == 0 || (b < 32 && b != b'\n' && b != b'\r' && b != b'\t'))
+        .count();
+
+    if check_len > 0 && non_printable * 10 > check_len {
+        // Looks binary
+        return format!(
+            "Binary file ({})\n\nThis file appears to contain binary data.",
+            format_size(total_size)
+        );
+    }
+
+    let content = String::from_utf8_lossy(&bytes);
+
+    if total_size > MAX_PREVIEW_BYTES as u64 {
+        format!(
+            "{}\n\n--- Truncated (showing 50KB of {}) ---",
+            content,
+            format_size(total_size)
+        )
+    } else {
+        content.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_text_reads_only_the_preview_window() {
+        let path = std::env::temp_dir().join(format!("archnav_preview_{}.txt", std::process::id()));
+        let big = "x".repeat(MAX_PREVIEW_BYTES * 4);
+        std::fs::write(&path, &big).unwrap();
+
+        let out = preview_text(path.to_str().unwrap());
+        assert!(out.len() < MAX_PREVIEW_BYTES + 200, "output must be capped, got {}", out.len());
+        assert!(out.contains("Truncated"));
+
+        let _ = std::fs::remove_file(&path);
     }
 }

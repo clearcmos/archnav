@@ -190,12 +190,17 @@ impl ParsedQuery {
         let mut path_segments: Option<Vec<String>> = None;
 
         // Strip "folder:" prefix (case-insensitive, with optional whitespace after).
-        // Restricts results to directories only.
+        // Restricts results to directories only. The is_char_boundary guard
+        // matters: slicing at a fixed byte offset panics when that byte falls
+        // inside a multibyte character (e.g. a query of accented or CJK text),
+        // and with panic=abort that kills the whole app mid-keystroke.
         let raw_trimmed = raw.trim();
-        let (file_type_mode, raw_effective) = if raw_trimmed.len() >= 7
-            && raw_trimmed[..7].eq_ignore_ascii_case("folder:")
-        {
-            (FileTypeMode::GotoDir, raw_trimmed[7..].trim_start())
+        const FOLDER_PREFIX_LEN: usize = "folder:".len();
+        let has_folder_prefix = raw_trimmed.len() >= FOLDER_PREFIX_LEN
+            && raw_trimmed.is_char_boundary(FOLDER_PREFIX_LEN)
+            && raw_trimmed[..FOLDER_PREFIX_LEN].eq_ignore_ascii_case("folder:");
+        let (file_type_mode, raw_effective) = if has_folder_prefix {
+            (FileTypeMode::GotoDir, raw_trimmed[FOLDER_PREFIX_LEN..].trim_start())
         } else {
             (FileTypeMode::All, raw_trimmed)
         };
@@ -475,6 +480,18 @@ mod tests {
     fn test_parse_no_folder_prefix() {
         let q = ParsedQuery::parse("movies", SortOrder::MtimeDesc);
         assert_eq!(q.file_type_mode, FileTypeMode::All);
+    }
+
+    #[test]
+    fn test_parse_multibyte_query_does_not_panic() {
+        // Regression: the folder: prefix check sliced raw_trimmed[..7] by byte
+        // offset, which panics when byte 7 is inside a multibyte character.
+        for q in ["éééé", "ééééééé", "日本語データ", "héllo wörld", "folder:éé"] {
+            let parsed = ParsedQuery::parse(q, SortOrder::MtimeDesc);
+            assert!(matches!(parsed.mode, QueryMode::Substring(_)));
+        }
+        let q = ParsedQuery::parse("folder:été", SortOrder::MtimeDesc);
+        assert_eq!(q.file_type_mode, FileTypeMode::GotoDir);
     }
 
     #[test]

@@ -67,6 +67,7 @@ This installs `archnav` to `/usr/bin/`, registers the desktop file, and ships th
 | `Ctrl+O` | Open containing folder |
 | `Ctrl+P` | Toggle preview pane |
 | `Ctrl+R` | Refresh index |
+| `Ctrl+B` | Manage bookmarks |
 | `Ctrl+Shift+F` | Toggle frecency sort |
 | `Ctrl+=` / `Ctrl+-` | Zoom in / out |
 | `Ctrl+0` | Reset zoom |
@@ -124,15 +125,22 @@ Config stored at `~/.config/archnav/config.json`:
     {"name": "nas", "path": "/mnt/nas", "is_network": true}
   ],
   "max_results": 500,
-  "toggle_hotkey": "Alt+`"
+  "toggle_hotkey": "Alt+`",
+  "exclude_paths": ["~/Downloads", "/mnt/scratch"]
 }
 ```
 
+- `max_results` caps how many results a search returns (hard cap 2000)
+- `exclude_paths` lists locations to exclude from indexing, recursively;
+  entries are absolute paths with an optional leading `~`
+- A config file with a syntax error is left untouched at startup (defaults are
+  used for that session) so a hand-editing typo cannot wipe your bookmarks
+
 ### Bookmark Management
 
-- Click **Bookmarks** button to open management dialog
-- Add directories to index
-- Mark network mounts with `is_network: true` (uses periodic rescan instead of inotify)
+- Press `Ctrl+B` to open the management dialog (add, rename, delete)
+- Changes are written back to `config.json`
+- Mark network mounts with `is_network: true` (uses periodic rescan instead of inotify); cifs/nfs/sshfs mounts are also detected automatically
 
 ## Architecture
 

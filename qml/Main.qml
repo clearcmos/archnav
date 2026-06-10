@@ -21,6 +21,9 @@ ApplicationWindow {
         root.hide()
     }
 
+    // Keep the tray menu text ("Show archnav" / "Hide archnav") in sync
+    onVisibleChanged: engine.set_window_visible(root.visible)
+
     property bool previewVisible: false
     property bool helpVisible: false
     property int currentSortIndex: 0  // 0=MtimeDesc, 1=MtimeAsc, 2=NameAsc, 3=NameDesc, 4=SizeDesc, 5=SizeAsc, 6=PathAsc, 7=Frecency
@@ -64,6 +67,11 @@ ApplicationWindow {
 
     PreviewBridge {
         id: preview
+    }
+
+    BookmarkDialog {
+        id: bookmarkDialog
+        searchEngine: engine
     }
 
     // Results data
@@ -275,7 +283,6 @@ ApplicationWindow {
                     minWidth: 80
                     onClicked: sortByName()
                     onWidthChangeRequested: function(newWidth) {
-                        console.log("[HEADER] Name width change:", nameColumnWidth, "->", newWidth)
                         nameColumnWidth = newWidth
                     }
                 }
@@ -290,7 +297,6 @@ ApplicationWindow {
                     minWidth: 100
                     onClicked: sortByPath()
                     onWidthChangeRequested: function(newWidth) {
-                        console.log("[HEADER] Path width change:", pathColumnWidth, "->", newWidth)
                         pathColumnWidth = newWidth
                     }
                 }
@@ -306,7 +312,6 @@ ApplicationWindow {
                     minWidth: 60
                     onClicked: sortBySize()
                     onWidthChangeRequested: function(newWidth) {
-                        console.log("[HEADER] Size width change:", sizeColumnWidth, "->", newWidth)
                         sizeColumnWidth = newWidth
                     }
                 }
@@ -427,6 +432,10 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+R"
         onActivated: engine.rescan_all()
+    }
+    Shortcut {
+        sequence: "Ctrl+B"
+        onActivated: bookmarkDialog.open()
     }
     Shortcut {
         sequence: "Ctrl+O"
@@ -557,6 +566,9 @@ ApplicationWindow {
 
                     Label { text: "Ctrl+R"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                     Label { text: "Rescan all bookmarks"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "Ctrl+B"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Manage bookmarks"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
 
                     // Separator
                     Item { Layout.columnSpan: 2; Layout.preferredHeight: Math.round(4 * Style.zoomFactor) }

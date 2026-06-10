@@ -16,6 +16,23 @@ extern "C" {
 static TOGGLE_CALLBACK: Mutex<Option<Box<dyn Fn() + Send + Sync>>> = Mutex::new(None);
 static EXIT_CALLBACK: Mutex<Option<Box<dyn Fn() + Send + Sync>>> = Mutex::new(None);
 
+/// Global tray handle so window-visibility changes (reported by QML through
+/// the bridge) can update the tray menu text. Stored as usize because raw
+/// pointers are not Send; only ever dereferenced on the Qt main thread.
+static TRAY_PTR: Mutex<Option<usize>> = Mutex::new(None);
+
+/// Update the tray menu ("Show archnav" / "Hide archnav") to match the
+/// window's visibility. No-op if the tray does not exist.
+pub fn set_global_window_visible(visible: bool) {
+    if let Ok(guard) = TRAY_PTR.lock() {
+        if let Some(ptr) = *guard {
+            unsafe {
+                system_tray_set_window_visible(ptr as *mut std::ffi::c_void, visible);
+            }
+        }
+    }
+}
+
 // C callback that routes to Rust closure
 extern "C" fn toggle_callback_wrapper() {
     if let Ok(guard) = TOGGLE_CALLBACK.lock() {
@@ -64,6 +81,10 @@ impl SystemTray {
 
         let ptr = unsafe { create_system_tray(toggle_callback_wrapper, exit_callback_wrapper) };
 
+        if let Ok(mut guard) = TRAY_PTR.lock() {
+            *guard = Some(ptr as usize);
+        }
+
         Self { ptr }
     }
 
@@ -75,18 +96,13 @@ impl SystemTray {
             }
         }
     }
-
-    /// Update the tray menu to reflect window visibility.
-    #[allow(dead_code)]
-    pub fn set_window_visible(&self, visible: bool) {
-        unsafe {
-            system_tray_set_window_visible(self.ptr, visible);
-        }
-    }
 }
 
 impl Drop for SystemTray {
     fn drop(&mut self) {
+        if let Ok(mut guard) = TRAY_PTR.lock() {
+            *guard = None;
+        }
         unsafe {
             destroy_system_tray(self.ptr);
         }

@@ -51,9 +51,8 @@ qml/
 ├── Main.qml             # Main window, keyboard shortcuts, layout
 ├── SearchBar.qml        # Search input field
 ├── ResultsList.qml      # File results ListView with delegates
-├── PreviewPanel.qml     # Preview pane (text, images, metadata)
-├── BookmarkDialog.qml   # Bookmark management dialog
-├── TestWindow.qml       # Minimal test window for development
+├── PreviewPanel.qml     # Preview pane (text, images, audio art, metadata)
+├── BookmarkDialog.qml   # Bookmark management dialog (Ctrl+B)
 └── Style.qml            # Singleton with colors, fonts, spacing
 ```
 
@@ -130,9 +129,11 @@ The search engine uses **trigram indexing** for instant substring matching:
 - **Real-time updates**: inotify watches for file changes (local paths only)
 - **Network mount support**: Periodic rescanning for network paths (marked `is_network`)
 - **Keyboard-centric**: Arrow keys navigate, Enter opens, Esc hides to tray
+- **Bookmark dialog**: Ctrl+B to add/rename/delete bookmarks; changes persist to config.json
 - **System tray**: Persists in tray when closed, left-click to toggle, right-click for menu
-- **Context menu**: Right-click for Open With, Cut, Copy, Rename, Delete, Properties, etc.
+- **Context menu**: Right-click for Open With, Cut, Copy, Rename, Delete (confirmed), Properties, etc.
 - **Zoom support**: Ctrl+=/- to zoom in/out, Ctrl+0 to reset
+- **Single instance**: Launching archnav while one is running toggles the existing window (a `--hidden` launch exits quietly instead)
 
 ## Keyboard Shortcuts
 
@@ -143,6 +144,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 | `Ctrl+O` | Open containing folder |
 | `Ctrl+P` | Toggle preview pane |
 | `Ctrl+R` | Rescan all bookmarks |
+| `Ctrl+B` | Manage bookmarks |
 | `Ctrl+Shift+F` | Toggle frecency sort |
 | `Ctrl+=` / `Ctrl++` | Zoom in |
 | `Ctrl+-` | Zoom out |
@@ -172,18 +174,27 @@ The search engine uses **trigram indexing** for instant substring matching:
 }
 ```
 
+`max_results` caps how many results a search returns (default 500, hard cap
+2000 via `MAX_RESULTS` in trigram.rs).
+
 `exclude_paths` is an optional list of locations to exclude from indexing,
 recursively. Entries are absolute paths with an optional leading `~` (home);
 a file is skipped if its path equals or sits under any entry. Edits take
 effect on restart - the scanner skips these going forward, and any files
 indexed before a path was added are purged on the next launch.
 
+A config file that exists but fails to parse is never overwritten: defaults
+are used for that session and a warning is logged, so a hand-editing typo
+cannot destroy bookmarks or excludes.
+
 Note: `toggle_hotkey` is stored for reference but global shortcuts must be configured manually in KDE System Settings.
 
 ## Exclude Patterns
 
-Built-in name patterns, hardcoded in `trigram.rs` (matched against any path
-component, so a dir of this name is skipped anywhere it appears):
+Built-in name patterns, hardcoded in `trigram.rs` (matched against directory
+names only - a plain file that shares one of these names stays indexed - and
+against any path component, so a dir of this name is skipped anywhere it
+appears):
 - `.git`, `node_modules`, `__pycache__`, `.cache`, `.npm`, `.cargo`
 - `target`, `build`, `dist`, `.next`, `.nuxt`
 - `.Trash`, `Trash`, `.steam`, `dosdevices`
@@ -209,7 +220,7 @@ The context menu (`context_menu.cpp`) provides Dolphin-like file operations:
 - Open / Open With (reads from `mimeapps.list`)
 - Cut, Copy, Copy Location
 - Duplicate Here
-- Rename, Delete, Move to Trash
+- Rename, Delete (permanent, behind a confirmation dialog), Move to Trash
 - Move to New Folder
 - Open Terminal Here
 - Open as Administrator
@@ -241,7 +252,13 @@ Window close behavior:
 
 ## Known Behaviors
 
-- **Max results**: Limited to 2000 items
-- **Integrity check**: Every 60s, checks 5000 files per cycle
-- **Network mounts**: Rescanned every 5 minutes (no inotify)
+- **Max results**: `max_results` from config (default 500), hard cap 2000
+- **Integrity check**: Every 60s, checks 5000 files per cycle; entries under a
+  bookmark root that is currently unreachable (e.g. an unmounted share) are
+  skipped, not purged
+- **Network mounts**: Rescanned every 5 minutes (no inotify). A bookmark is
+  treated as network if its config `is_network` flag is set or its mount is
+  detected as nfs/cifs/sshfs in /proc/mounts (longest mount-point match)
+- **Single instance**: A second plain launch toggles the running instance and
+  exits; a second `--hidden` launch exits without toggling
 - **Wayland**: Cannot set window position; centers on show

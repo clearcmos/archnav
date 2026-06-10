@@ -6,7 +6,7 @@ use std::time::Duration;
 use tracing::info;
 
 use super::database::DbOp;
-use super::scanner::{is_network_mount, scan_directory};
+use super::scanner::{path_under_root, scan_directory};
 use super::trigram::TrigramIndex;
 
 const INTEGRITY_CHECK_INTERVAL_SECS: u64 = 60;
@@ -20,26 +20,50 @@ pub fn start_integrity_checker(index: Arc<RwLock<TrigramIndex>>, db_tx: Sender<D
         loop {
             thread::sleep(Duration::from_secs(INTEGRITY_CHECK_INTERVAL_SECS));
 
-            let paths_to_check: Vec<String> = {
+            // Bookmark roots that are currently unreachable (e.g. an unmounted
+            // network share). Entries beneath them must not be purged: the
+            // files still exist, the mount is just absent right now, and
+            // nothing would re-add them until a restart or manual rescan.
+            let (paths_to_check, unavailable_roots): (Vec<String>, Vec<String>) = {
                 let idx = index.read().unwrap();
-                let all_paths: Vec<_> = idx.files.values().map(|f| f.path.clone()).collect();
 
-                if all_paths.is_empty() {
+                if idx.files.is_empty() {
                     continue;
                 }
 
-                if offset >= all_paths.len() {
+                let unavailable: Vec<String> = idx
+                    .bookmarks
+                    .iter()
+                    .filter(|b| !Path::new(&b.path).exists())
+                    .map(|b| b.path.clone())
+                    .collect();
+
+                if offset >= idx.files.len() {
                     offset = 0;
                 }
 
-                let end = (offset + INTEGRITY_BATCH_SIZE).min(all_paths.len());
-                let batch = all_paths[offset..end].to_vec();
-                offset = end;
-                batch
+                // Clone only this cycle's batch, not every indexed path.
+                // HashMap iteration order is not stable across mutations, so
+                // this is a statistical sweep rather than a strict rotation.
+                let batch: Vec<String> = idx
+                    .files
+                    .values()
+                    .skip(offset)
+                    .take(INTEGRITY_BATCH_SIZE)
+                    .map(|f| f.path.clone())
+                    .collect();
+                offset += batch.len();
+                (batch, unavailable)
             };
 
             let mut removed_count = 0;
             for path_str in paths_to_check {
+                if unavailable_roots
+                    .iter()
+                    .any(|root| path_under_root(&path_str, root))
+                {
+                    continue;
+                }
                 let path = Path::new(&path_str);
                 if !path.exists() {
                     {
@@ -58,22 +82,29 @@ pub fn start_integrity_checker(index: Arc<RwLock<TrigramIndex>>, db_tx: Sender<D
     });
 }
 
+/// Periodically rescan network bookmark paths. inotify cannot see remote
+/// changes, so polling is the only way these stay fresh. The caller decides
+/// which paths are network (config flag or mount-table detection); no
+/// re-filtering happens here.
 pub fn start_network_scanner(
-    paths: Vec<PathBuf>,
+    network_paths: Vec<PathBuf>,
     index: Arc<RwLock<TrigramIndex>>,
     db_tx: Sender<DbOp>,
 ) {
-    let network_paths: Vec<PathBuf> = paths.into_iter().filter(|p| is_network_mount(p)).collect();
-
     if network_paths.is_empty() {
         return;
     }
 
     thread::spawn(move || loop {
+        // Sleep first: the startup scan/reconcile already covered these paths.
+        thread::sleep(Duration::from_secs(NETWORK_SCAN_INTERVAL_SECS));
         for path in &network_paths {
+            if !path.exists() {
+                info!("Skipping network scan, mount absent: {}", path.display());
+                continue;
+            }
             info!("Periodic scan of network mount: {}", path.display());
             scan_directory(path, &index, &db_tx);
         }
-        thread::sleep(Duration::from_secs(NETWORK_SCAN_INTERVAL_SECS));
     });
 }

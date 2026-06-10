@@ -119,42 +119,51 @@ pub fn preview_subprocess(path: &str) -> String {
         "rar" => ("unrar", vec!["l", path]),
         "zst" => {
             // For .tar.zst, try zstd + tar
-            let output = std::process::Command::new("zstd")
+            let child = std::process::Command::new("zstd")
                 .args(["-d", "-c", path])
                 .stdout(std::process::Stdio::piped())
-                .spawn()
-                .and_then(|child| {
-                    let stdout = child.stdout.unwrap();
-                    let mut archive = tar::Archive::new(stdout);
-                    let mut lines = vec!["ZSTD Archive:\n".to_string()];
-                    let mut count = 0;
-                    if let Ok(entries) = archive.entries() {
-                        for entry in entries.filter_map(|e| e.ok()) {
-                            if count >= MAX_ENTRIES {
-                                break;
-                            }
-                            let p = entry
-                                .path()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or_else(|_| "???".to_string());
-                            let size = entry.size();
-                            if entry.header().entry_type().is_dir() {
-                                lines.push(format!("  [dir]     {}", p));
-                            } else {
-                                lines.push(format!(
-                                    "  {:>8}  {}",
-                                    super::format_size(size),
-                                    p
-                                ));
-                            }
-                            count += 1;
-                        }
-                    }
-                    Ok(lines.join("\n"))
-                });
+                .stderr(std::process::Stdio::null())
+                .spawn();
 
-            return match output {
-                Ok(text) => text,
+            return match child {
+                Ok(mut child) => {
+                    let text = match child.stdout.take() {
+                        Some(stdout) => {
+                            let mut archive = tar::Archive::new(stdout);
+                            let mut lines = vec!["ZSTD Archive:\n".to_string()];
+                            let mut count = 0;
+                            if let Ok(entries) = archive.entries() {
+                                for entry in entries.filter_map(|e| e.ok()) {
+                                    if count >= MAX_ENTRIES {
+                                        break;
+                                    }
+                                    let p = entry
+                                        .path()
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .unwrap_or_else(|_| "???".to_string());
+                                    let size = entry.size();
+                                    if entry.header().entry_type().is_dir() {
+                                        lines.push(format!("  [dir]     {}", p));
+                                    } else {
+                                        lines.push(format!(
+                                            "  {:>8}  {}",
+                                            super::format_size(size),
+                                            p
+                                        ));
+                                    }
+                                    count += 1;
+                                }
+                            }
+                            lines.join("\n")
+                        }
+                        None => "Unable to read zst archive output".to_string(),
+                    };
+                    // We stop reading after MAX_ENTRIES; reap the decompressor
+                    // so it does not linger as a zombie process.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    text
+                }
                 Err(e) => format!("Unable to read zst archive: {}", e),
             };
         }

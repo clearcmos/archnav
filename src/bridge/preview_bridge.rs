@@ -32,7 +32,7 @@ pub mod qobject {
 }
 
 use std::pin::Pin;
-use cxx_qt::Threading;
+use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
 /// Rust backing struct for the PreviewBridge QObject.
@@ -42,6 +42,9 @@ pub struct PreviewBridgeRust {
     image_path: QString,
     file_path: QString,
     is_loading: bool,
+    /// Sequence counter so a slow preview (e.g. ffprobe over a network mount)
+    /// cannot overwrite the preview of a file selected later.
+    preview_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Default for PreviewBridgeRust {
@@ -52,14 +55,18 @@ impl Default for PreviewBridgeRust {
             image_path: QString::default(),
             file_path: QString::default(),
             is_loading: false,
+            preview_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 }
 
 impl qobject::PreviewBridge {
     /// Request a preview for the given path. Runs in background thread,
-    /// emits preview_ready when done.
+    /// emits preview_ready when done. Stale results (a newer request or a
+    /// clear happened meanwhile) are discarded.
     fn request_preview(mut self: Pin<&mut Self>, path: QString, is_dir: bool, content_width: i32) {
+        use std::sync::atomic::Ordering;
+
         let path_str = path.to_string();
         self.as_mut().set_file_path(QString::from(&*path_str));
         self.as_mut().set_is_loading(true);
@@ -67,10 +74,16 @@ impl qobject::PreviewBridge {
         let qt_thread = self.qt_thread();
         let width = content_width.max(100) as u32;  // Minimum 100px
 
+        let seq_counter = self.rust().preview_seq.clone();
+        let my_seq = seq_counter.fetch_add(1, Ordering::SeqCst) + 1;
+
         std::thread::spawn(move || {
             let result = crate::preview::generate_preview(&path_str, is_dir, width);
 
             let _ = qt_thread.queue(move |mut qobj| {
+                if my_seq < seq_counter.load(Ordering::SeqCst) {
+                    return; // superseded by a newer request or a clear
+                }
                 qobj.as_mut()
                     .set_preview_type(QString::from(&*result.preview_type));
                 qobj.as_mut()
@@ -84,6 +97,10 @@ impl qobject::PreviewBridge {
     }
 
     fn clear_preview(mut self: Pin<&mut Self>) {
+        // Invalidate any in-flight preview so it cannot resurrect content.
+        self.rust()
+            .preview_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.as_mut().set_preview_type(QString::from("none"));
         self.as_mut().set_preview_text(QString::default());
         self.as_mut().set_image_path(QString::default());

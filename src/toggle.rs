@@ -14,6 +14,11 @@ pub fn socket_path() -> String {
         + "/archnav.sock"
 }
 
+/// True if a live archnav instance currently owns the toggle socket.
+pub fn instance_running() -> bool {
+    UnixStream::connect(socket_path()).is_ok()
+}
+
 /// Try to send a toggle command to an existing instance.
 /// Returns true if successful (existing instance found).
 pub fn send_toggle() -> bool {
@@ -61,15 +66,21 @@ pub fn start_toggle_server(qt_thread: CxxQtThread<SearchEngine>) {
         for stream in listener.incoming() {
             match stream {
                 Ok(mut stream) => {
-                    let mut buf = [0u8; 64];
-                    if let Ok(n) = stream.read(&mut buf) {
-                        let msg = String::from_utf8_lossy(&buf[..n]);
-                        if msg.trim() == "toggle" {
-                            let _ = qt_thread.queue(|mut qobj| {
-                                qobj.as_mut().toggleRequested();
-                            });
+                    // Handle each client on its own thread so one connection
+                    // that never writes cannot wedge the accept loop (and with
+                    // it every future tray click and --toggle).
+                    let qt_thread = qt_thread.clone();
+                    thread::spawn(move || {
+                        let mut buf = [0u8; 64];
+                        if let Ok(n) = stream.read(&mut buf) {
+                            let msg = String::from_utf8_lossy(&buf[..n]);
+                            if msg.trim() == "toggle" {
+                                let _ = qt_thread.queue(|mut qobj| {
+                                    qobj.as_mut().toggleRequested();
+                                });
+                            }
                         }
-                    }
+                    });
                 }
                 Err(e) => {
                     warn!("Toggle accept error: {}", e);

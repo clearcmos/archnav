@@ -115,21 +115,42 @@ impl Database {
     /// Load index from database. Tries fast path (posting lists) first,
     /// falls back to rebuilding from per-file trigrams if cache is stale.
     pub fn load_into_index(&self, index: &mut TrigramIndex) -> rusqlite::Result<usize> {
-        // Try fast path: load pre-built posting lists
-        if let Some(count) = self.try_load_fast(index)? {
-            // Load access data for frecency
-            self.load_access_into_index(index);
-            return Ok(count);
+        let count = {
+            // Try fast path: load pre-built posting lists
+            if let Some(count) = self.try_load_fast(index)? {
+                // Load access data for frecency
+                self.load_access_into_index(index);
+                count
+            } else {
+                // Slow path: load files with per-file trigrams, rebuild posting lists
+                let count = self.load_slow(index)?;
+
+                // Load access data for frecency
+                self.load_access_into_index(index);
+
+                // Cache posting lists for next startup
+                self.save_posting_lists(index)?;
+
+                count
+            }
+        };
+
+        // Continue id allocation from the persisted high-water mark so ids of
+        // deleted files are never reused (see save_file for why that matters).
+        let max_id: Option<u32> = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'max_file_id'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|s| s.parse().ok());
+        if let Some(max_id) = max_id {
+            if max_id >= index.next_id {
+                index.next_id = max_id + 1;
+            }
         }
-
-        // Slow path: load files with per-file trigrams, rebuild posting lists
-        let count = self.load_slow(index)?;
-
-        // Load access data for frecency
-        self.load_access_into_index(index);
-
-        // Cache posting lists for next startup
-        self.save_posting_lists(index)?;
 
         Ok(count)
     }
@@ -484,6 +505,19 @@ impl Database {
             }
         }
 
+        // Track the high-water mark of allocated ids. next_id is otherwise
+        // recomputed as max(loaded id)+1, so deleting the highest-id file lets
+        // a later file reuse that id; the reused id sits below the posting-list
+        // cache's next_id mark, gets skipped by the fast-load backfill, and the
+        // file stays invisible to trigram search until a full cache rebuild.
+        if let Err(e) = self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('max_file_id', ?1)
+             ON CONFLICT(key) DO UPDATE SET
+                value = MAX(CAST(value AS INTEGER), CAST(excluded.value AS INTEGER))",
+            params![entry.id.to_string()],
+        ) {
+            warn!("Failed to update max_file_id: {}", e);
+        }
     }
 
     fn remove_file(&self, path: &str) {
@@ -520,16 +554,24 @@ impl Database {
     }
 
     fn clear_files_under(&self, path: &str) {
+        // Match the path itself or anything below it with a '/' boundary, so
+        // clearing "/mnt/data" cannot take "/mnt/database" with it. LIKE
+        // wildcards are escaped so '_' and '%' in real paths stay literal
+        // (an unescaped '_' matches any single character).
+        let root = path.trim_end_matches('/');
+        let prefix = format!("{}/%", escape_like(root));
+
         if let Err(e) = self.conn.execute(
-            "DELETE FROM file_trigrams WHERE file_id IN (SELECT id FROM files WHERE path LIKE ?1)",
-            params![format!("{}%", path)],
+            "DELETE FROM file_trigrams WHERE file_id IN
+                (SELECT id FROM files WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\')",
+            params![root, prefix],
         ) {
             warn!("Failed to clear trigrams: {}", e);
         }
 
         if let Err(e) = self.conn.execute(
-            "DELETE FROM files WHERE path LIKE ?1",
-            params![format!("{}%", path)],
+            "DELETE FROM files WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
+            params![root, prefix],
         ) {
             warn!("Failed to clear files: {}", e);
         }
@@ -589,6 +631,12 @@ impl Database {
     }
 }
 
+/// Escape SQLite LIKE wildcards so a literal path can be used as a prefix
+/// pattern (paired with ESCAPE '\' in the query).
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
 /// Pack trigrams into a BLOB (3 bytes per trigram, concatenated).
 fn pack_trigrams(trigrams: &[[u8; 3]]) -> Vec<u8> {
     let mut blob = Vec::with_capacity(trigrams.len() * 3);
@@ -621,8 +669,41 @@ pub fn start_db_thread(db: Database) -> Sender<DbOp> {
     let (tx, rx) = channel::<DbOp>();
 
     thread::spawn(move || {
-        for op in rx {
-            db.process_op(op);
+        // Drain bursts into a single transaction: the initial scan queues
+        // hundreds of thousands of ops, and one autocommit per op makes that
+        // far slower than it needs to be.
+        const MAX_BATCH: usize = 1000;
+        while let Ok(first) = rx.recv() {
+            let mut ops = vec![first];
+            while ops.len() < MAX_BATCH {
+                match rx.try_recv() {
+                    Ok(op) => ops.push(op),
+                    Err(_) => break,
+                }
+            }
+
+            if ops.len() == 1 {
+                db.process_op(ops.pop().unwrap());
+                continue;
+            }
+
+            let count = ops.len();
+            match db.conn.unchecked_transaction() {
+                Ok(batch_tx) => {
+                    for op in ops {
+                        db.process_op(op);
+                    }
+                    if let Err(e) = batch_tx.commit() {
+                        warn!("DB batch commit failed ({} ops): {}", count, e);
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to open DB transaction, falling back to autocommit: {}", e);
+                    for op in ops {
+                        db.process_op(op);
+                    }
+                }
+            }
         }
         info!("Database thread exiting");
     });
@@ -702,6 +783,80 @@ mod fast_load_tests {
             let q = ParsedQuery::parse("otto *.mkv", SortOrder::MtimeDesc);
             let results = idx.search_all(&q, &[]);
             assert_eq!(results.len(), 1, "`otto *.mkv` must match exactly the backfilled file");
+        }
+
+        cleanup(&path);
+    }
+
+    /// Removing a bookmark must not delete rows for sibling paths sharing a
+    /// string prefix, and LIKE wildcards in real paths must stay literal.
+    #[test]
+    fn clear_files_under_respects_boundary_and_like_wildcards() {
+        let path = temp_db_path();
+        cleanup(&path);
+
+        {
+            let db = Database::open_at(path.clone()).unwrap();
+            let mut idx = TrigramIndex::new();
+            for p in [
+                "/mnt/data/a.txt",
+                "/mnt/database/b.txt",
+                "/mnt/my_dir/c.txt",
+                "/mnt/myxdir/d.txt",
+            ] {
+                let (id, tris) = idx.add(p.to_string(), false, 1, 1);
+                db.save_file(idx.files.get(&id).unwrap(), &tris);
+            }
+
+            db.clear_files_under("/mnt/data");
+            db.clear_files_under("/mnt/my_dir");
+
+            let mut stmt = db.conn.prepare("SELECT path FROM files ORDER BY path").unwrap();
+            let remaining: Vec<String> = stmt
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            assert_eq!(
+                remaining,
+                vec!["/mnt/database/b.txt".to_string(), "/mnt/myxdir/d.txt".to_string()]
+            );
+        }
+
+        cleanup(&path);
+    }
+
+    /// Deleting the highest-id file must not let a later file reuse its id
+    /// across a restart; a reused id is skipped by the posting-list backfill
+    /// and stays invisible to trigram search.
+    #[test]
+    fn deleted_high_id_is_not_reused_after_reload() {
+        let path = temp_db_path();
+        cleanup(&path);
+
+        let removed_id;
+        {
+            let db = Database::open_at(path.clone()).unwrap();
+            let mut idx = TrigramIndex::new();
+            let (id_a, tris_a) = idx.add("/d/aaaa.txt".to_string(), false, 1, 1);
+            db.save_file(idx.files.get(&id_a).unwrap(), &tris_a);
+            let (id_b, tris_b) = idx.add("/d/bbbb.txt".to_string(), false, 2, 2);
+            db.save_file(idx.files.get(&id_b).unwrap(), &tris_b);
+            removed_id = id_b;
+            db.remove_file("/d/bbbb.txt");
+        }
+
+        {
+            let db = Database::open_at(path.clone()).unwrap();
+            let mut idx = TrigramIndex::new();
+            db.load_into_index(&mut idx).unwrap();
+            let (new_id, _) = idx.add("/d/cccc.txt".to_string(), false, 3, 3);
+            assert!(
+                new_id > removed_id,
+                "deleted ids must not be reused (got {} after removing {})",
+                new_id,
+                removed_id
+            );
         }
 
         cleanup(&path);

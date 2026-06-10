@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
 
 use super::query::{FileTypeMode, ParsedQuery, QueryMode, SortOrder};
+use super::scanner::path_under_root;
 
 /// Access information for frecency scoring.
 #[derive(Debug, Clone, Default)]
@@ -105,6 +106,9 @@ pub struct TrigramIndex {
     pub bookmarks: Vec<Bookmark>,
     /// Access data for frecency scoring (file_id -> AccessInfo)
     pub access_data: HashMap<u32, AccessInfo>,
+    /// Result cap applied after sorting. Set from config max_results at
+    /// startup; hard-capped at MAX_RESULTS.
+    pub max_results: usize,
 }
 
 impl TrigramIndex {
@@ -116,6 +120,7 @@ impl TrigramIndex {
             next_id: 1,
             bookmarks: Vec::new(),
             access_data: HashMap::new(),
+            max_results: MAX_RESULTS,
         }
     }
 
@@ -394,8 +399,10 @@ impl TrigramIndex {
             .into_iter()
             .filter_map(|id| self.files.get(&id))
             .filter(|entry| {
-                // Must be under the bookmark path
-                if !entry.path.starts_with(bookmark_path) {
+                // Must be under the bookmark path, with a path-boundary check
+                // so "/mnt/data" cannot leak in "/mnt/database" entries.
+                // An empty bookmark path means no restriction.
+                if !bookmark_path.is_empty() && !path_under_root(&entry.path, bookmark_path) {
                     return false;
                 }
 
@@ -451,7 +458,7 @@ impl TrigramIndex {
             .collect();
 
         sort_results(&mut results, query.sort_order, &self.path_to_id, &self.access_data);
-        results.truncate(MAX_RESULTS);
+        results.truncate(self.max_results);
         results
     }
 
@@ -476,10 +483,11 @@ impl TrigramIndex {
             .into_iter()
             .filter_map(|id| self.files.get(&id))
             .filter_map(|entry| {
-                // Find which bookmark this file belongs to
+                // Find which bookmark this file belongs to (boundary-aware,
+                // so "/mnt/database" is not attributed to bookmark "/mnt/data")
                 let bookmark_name = search_paths
                     .iter()
-                    .find(|&&bp| entry.path.starts_with(bp))
+                    .find(|&&bp| path_under_root(&entry.path, bp))
                     .and_then(|bp| bookmark_map.get(bp).copied())?;
 
                 // File type mode filter
@@ -538,7 +546,7 @@ impl TrigramIndex {
             .collect();
 
         sort_all_results(&mut results, query.sort_order, &self.path_to_id, &self.access_data);
-        results.truncate(MAX_RESULTS);
+        results.truncate(self.max_results);
         results
     }
 
@@ -763,6 +771,44 @@ mod tests {
         };
         let results = index.search(&query, "/tmp");
         assert_eq!(results[0].size, 300);
+    }
+
+    #[test]
+    fn test_bookmark_boundary_no_sibling_prefix_leak() {
+        let mut index = TrigramIndex::new();
+        index.bookmarks.push(Bookmark {
+            name: "data".to_string(),
+            path: "/mnt/data".to_string(),
+            is_network: false,
+        });
+        index.add("/mnt/data/file.txt".to_string(), false, 100, 1);
+        index.add("/mnt/database/other.txt".to_string(), false, 100, 1);
+
+        let query = ParsedQuery::parse("*.txt", SortOrder::MtimeDesc);
+        let results = index.search(&query, "/mnt/data");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, "/mnt/data/file.txt");
+
+        let all = index.search_all(&query, &[]);
+        assert_eq!(all.len(), 1, "sibling-prefix paths must not be attributed to a bookmark");
+        assert_eq!(all[0].bookmark, "data");
+    }
+
+    #[test]
+    fn test_max_results_truncation() {
+        let mut index = TrigramIndex::new();
+        index.bookmarks.push(Bookmark {
+            name: "t".to_string(),
+            path: "/t".to_string(),
+            is_network: false,
+        });
+        index.max_results = 3;
+        for i in 0..10 {
+            index.add(format!("/t/file{}.txt", i), false, i, 0);
+        }
+        let query = ParsedQuery::parse("*.txt", SortOrder::MtimeDesc);
+        assert_eq!(index.search(&query, "/t").len(), 3);
+        assert_eq!(index.search_all(&query, &[]).len(), 3);
     }
 
     #[test]

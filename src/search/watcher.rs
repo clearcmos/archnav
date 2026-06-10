@@ -53,29 +53,45 @@ fn handle_fs_event(event: Event, index: &Arc<RwLock<TrigramIndex>>, db_tx: &Send
     match event.kind {
         Create(_) | Modify(_) => {
             for path in event.paths {
-                if should_exclude(&path) {
-                    continue;
-                }
-                if let Ok(meta) = path.metadata() {
-                    let path_str = path.to_string_lossy().to_string();
-                    let is_dir = meta.is_dir();
-                    let mtime = get_mtime(&path);
-                    let size = if is_dir { 0 } else { meta.len() };
+                match path.metadata() {
+                    Ok(meta) => {
+                        let is_dir = meta.is_dir();
+                        if should_exclude(&path, is_dir) {
+                            continue;
+                        }
+                        let path_str = path.to_string_lossy().to_string();
+                        let mtime = get_mtime(&path);
+                        let size = if is_dir { 0 } else { meta.len() };
 
-                    let (id, trigrams) = {
-                        let mut idx = index.write().unwrap();
-                        idx.add(path_str.clone(), is_dir, mtime, size)
-                    };
+                        let (id, trigrams) = {
+                            let mut idx = index.write().unwrap();
+                            idx.add(path_str.clone(), is_dir, mtime, size)
+                        };
 
-                    let entry = FileEntry {
-                        id,
-                        path: path_str,
-                        is_dir,
-                        mtime,
-                        size,
-                    };
-                    let _ = db_tx.send(DbOp::SaveFile(entry, trigrams));
-                    debug!("Indexed: {}", path.display());
+                        let entry = FileEntry {
+                            id,
+                            path: path_str,
+                            is_dir,
+                            mtime,
+                            size,
+                        };
+                        let _ = db_tx.send(DbOp::SaveFile(entry, trigrams));
+                        debug!("Indexed: {}", path.display());
+                    }
+                    // The rename-From half of a move arrives as a Modify event
+                    // for a path that no longer exists. Treat any vanished path
+                    // as a removal, otherwise the old name lingers in results
+                    // until the integrity sweep eventually reaches it.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        let path_str = path.to_string_lossy().to_string();
+                        {
+                            let mut idx = index.write().unwrap();
+                            idx.remove(&path_str);
+                        }
+                        let _ = db_tx.send(DbOp::RemoveFile(path_str));
+                        debug!("Removed (vanished): {}", path.display());
+                    }
+                    Err(_) => {}
                 }
             }
         }

@@ -14,6 +14,7 @@
 #include <QStandardPaths>
 #include <QDBusInterface>
 #include <QDBusConnection>
+#include <QMessageBox>
 
 // KDE Frameworks - same app discovery as Dolphin (instant, uses cached data)
 #include <KApplicationTrader>
@@ -164,6 +165,20 @@ void ContextMenuHandler::showContextMenu(const QString &filePath, const QPoint &
     QAction *deleteAction = menu.addAction(QIcon::fromTheme("edit-delete"), "Delete");
     deleteAction->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_Delete));
     QObject::connect(deleteAction, &QAction::triggered, [filePath, fileInfo]() {
+        // Permanent (and for directories recursive) deletion must never be a
+        // single misclick away; confirm with No as the default.
+        const QString what = fileInfo.isDir()
+            ? QString("the folder \"%1\" and everything inside it").arg(fileInfo.fileName())
+            : QString("\"%1\"").arg(fileInfo.fileName());
+        const QMessageBox::StandardButton answer = QMessageBox::warning(
+            nullptr,
+            "Delete Permanently",
+            QString("Permanently delete %1?\n\nThis cannot be undone.").arg(what),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            return;
+        }
         if (fileInfo.isDir()) {
             QDir(filePath).removeRecursively();
         } else {

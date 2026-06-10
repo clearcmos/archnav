@@ -99,6 +99,10 @@ pub mod qobject {
         #[qinvokable]
         fn open_folder(self: &SearchEngine, path: QString);
 
+        // Window state (QML reports visibility so the tray menu text tracks it)
+        #[qinvokable]
+        fn set_window_visible(self: &SearchEngine, visible: bool);
+
         // Context menu
         #[qinvokable]
         fn show_context_menu(self: &SearchEngine, path: QString, x: i32, y: i32);
@@ -184,6 +188,7 @@ impl qobject::SearchEngine {
             let engine = Arc::new(CoreEngine::new(
                 default_bookmarks,
                 config.expanded_exclude_paths(),
+                config.effective_max_results(),
             ));
             let file_count = engine.file_count() as i32;
             let bookmark_count = engine.bookmarks().len() as i32;
@@ -263,28 +268,59 @@ impl qobject::SearchEngine {
         });
     }
 
+    /// Add a bookmark and scan it in a background thread; scanning a large
+    /// folder on the UI thread would freeze the window for its duration.
     fn add_bookmark(mut self: Pin<&mut Self>, name: QString, path: QString, is_network: bool) {
         let inner = match self.rust().inner.as_ref() {
             Some(inner) => inner.clone(),
             None => return,
         };
 
-        inner.add_bookmark(&name.to_string(), &path.to_string(), is_network);
-        let count = inner.bookmarks().len() as i32;
-        self.as_mut().set_bookmark_count(count);
-        self.as_mut().bookmarksChanged();
+        let name = name.to_string();
+        let path = path.to_string();
+        let qt_thread = self.qt_thread();
+        self.as_mut().set_status_text(QString::from(
+            &format!("Indexing {}...", path),
+        ));
+
+        std::thread::spawn(move || {
+            inner.add_bookmark(&name, &path, is_network);
+            let count = inner.bookmarks().len() as i32;
+            let file_count = inner.file_count() as i32;
+
+            let _ = qt_thread.queue(move |mut qobj| {
+                qobj.as_mut().set_bookmark_count(count);
+                qobj.as_mut().set_total_indexed(file_count);
+                qobj.as_mut().set_status_text(QString::from(
+                    &format!("{} files indexed", file_count),
+                ));
+                qobj.as_mut().bookmarksChanged();
+            });
+        });
     }
 
-    fn remove_bookmark(mut self: Pin<&mut Self>, name: QString) {
+    /// Remove a bookmark in a background thread (purging a large bookmark's
+    /// in-memory entries is not instant).
+    fn remove_bookmark(self: Pin<&mut Self>, name: QString) {
         let inner = match self.rust().inner.as_ref() {
             Some(inner) => inner.clone(),
             None => return,
         };
 
-        inner.remove_bookmark(&name.to_string());
-        let count = inner.bookmarks().len() as i32;
-        self.as_mut().set_bookmark_count(count);
-        self.as_mut().bookmarksChanged();
+        let name = name.to_string();
+        let qt_thread = self.qt_thread();
+
+        std::thread::spawn(move || {
+            inner.remove_bookmark(&name);
+            let count = inner.bookmarks().len() as i32;
+            let file_count = inner.file_count() as i32;
+
+            let _ = qt_thread.queue(move |mut qobj| {
+                qobj.as_mut().set_bookmark_count(count);
+                qobj.as_mut().set_total_indexed(file_count);
+                qobj.as_mut().bookmarksChanged();
+            });
+        });
     }
 
     fn rename_bookmark(mut self: Pin<&mut Self>, old_name: QString, new_name: QString) {
@@ -420,6 +456,12 @@ impl qobject::SearchEngine {
             .unwrap_or(path_str);
         // Use KIO::OpenUrlJob which handles XDG activation tokens for Wayland focus
         crate::file_opener::open_file(&parent);
+    }
+
+    /// QML reports window visibility changes so the tray menu can flip
+    /// between "Show archnav" and "Hide archnav".
+    fn set_window_visible(&self, visible: bool) {
+        crate::system_tray::set_global_window_visible(visible);
     }
 
     /// Show a KDE context menu for the given file path.

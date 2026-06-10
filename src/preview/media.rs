@@ -170,12 +170,22 @@ fn format_ffprobe_json(json: &str, path: &str) -> String {
     }
 }
 
-/// Extract album art from audio file to a temp file. Returns path or empty string.
+/// Extract album art from audio file to a cache file. Returns path or empty string.
 fn extract_album_art(path: &str) -> String {
-    let temp_dir = std::env::temp_dir().join("archnav-art");
-    std::fs::create_dir_all(&temp_dir).ok();
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
 
-    let output_path = temp_dir.join("album_art.jpg");
+    let art_dir = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("archnav/art");
+    std::fs::create_dir_all(&art_dir).ok();
+
+    // One file per source path: a single fixed name is racy across
+    // concurrent previews, and QML never reloads an unchanged source URL,
+    // so switching tracks would keep showing the previous art.
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    let output_path = art_dir.join(format!("{:016x}.jpg", hasher.finish()));
 
     let result = Command::new("ffmpeg")
         .args([

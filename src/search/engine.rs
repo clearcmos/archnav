@@ -9,8 +9,8 @@ use tracing::{info, warn, debug};
 use super::database::{Database, DbOp, start_db_thread};
 use super::integrity::{start_integrity_checker, start_network_scanner};
 use super::query::{ParsedQuery, QueryMode, SortOrder};
-use super::scanner::{scan_directory, reconcile_directory};
-use super::trigram::{Bookmark, SearchAllResult, TrigramIndex};
+use super::scanner::{is_network_mount, path_under_root, scan_directory, reconcile_directory};
+use super::trigram::{Bookmark, SearchAllResult, TrigramIndex, MAX_RESULTS};
 use super::watcher::start_watcher;
 
 /// Cache for incremental search refinement.
@@ -88,8 +88,9 @@ pub struct CoreEngine {
 impl CoreEngine {
     /// Create a new engine, load from database, start background threads.
     /// `exclude_paths` are recursive blacklist locations from config (already
-    /// normalized via `AppConfig::expanded_exclude_paths`).
-    pub fn new(bookmarks: Vec<Bookmark>, exclude_paths: Vec<String>) -> Self {
+    /// normalized via `AppConfig::expanded_exclude_paths`). `max_results` is
+    /// the per-search result cap from config, hard-capped at MAX_RESULTS.
+    pub fn new(bookmarks: Vec<Bookmark>, exclude_paths: Vec<String>, max_results: usize) -> Self {
         // Install the user's recursive exclude paths before anything scans, so
         // the initial scan, reconcile, network rescans, and the watcher all
         // skip them via the shared should_exclude chokepoint.
@@ -101,6 +102,7 @@ impl CoreEngine {
         // Load existing index from database
         {
             let mut idx = index.write().unwrap();
+            idx.max_results = max_results.clamp(1, MAX_RESULTS);
             match db.load_into_index(&mut idx) {
                 Ok(count) => info!("Loaded {} files from database", count),
                 Err(e) => warn!("Failed to load index from database: {}", e),
@@ -182,23 +184,27 @@ impl CoreEngine {
             let watcher_holder = watcher_holder.clone();
 
             thread::spawn(move || {
-                // Collect paths for watchers/scanners
-                let all_paths: Vec<PathBuf> = index
-                    .read()
-                    .unwrap()
-                    .bookmarks
+                // Split bookmark paths into local (inotify) and network
+                // (periodic rescan). The config is_network flag is
+                // authoritative; mount-table detection catches network mounts
+                // the user didn't flag.
+                let mut local_paths: Vec<PathBuf> = Vec::new();
+                let mut network_paths: Vec<PathBuf> = Vec::new();
+                {
+                    let idx = index.read().unwrap();
+                    for b in &idx.bookmarks {
+                        let path = PathBuf::from(&b.path);
+                        if b.is_network || is_network_mount(&path) {
+                            network_paths.push(path);
+                        } else {
+                            local_paths.push(path);
+                        }
+                    }
+                }
+                let all_paths: Vec<PathBuf> = local_paths
                     .iter()
-                    .map(|b| PathBuf::from(&b.path))
-                    .collect();
-
-                // Local-only paths for inotify (skip bookmarks marked as network)
-                let local_paths: Vec<PathBuf> = index
-                    .read()
-                    .unwrap()
-                    .bookmarks
-                    .iter()
-                    .filter(|b| !b.is_network)
-                    .map(|b| PathBuf::from(&b.path))
+                    .chain(network_paths.iter())
+                    .cloned()
                     .collect();
 
                 // Start inotify watcher (local paths only)
@@ -214,7 +220,7 @@ impl CoreEngine {
 
                 // Start background integrity checker + network scanner
                 start_integrity_checker(index.clone(), db_tx.clone());
-                start_network_scanner(all_paths.clone(), index.clone(), db_tx.clone());
+                start_network_scanner(network_paths, index.clone(), db_tx.clone());
 
                 // Initial scan if database was empty, otherwise reconcile to find new files
                 let needs_scan = index.read().unwrap().file_count() == 0;
@@ -299,7 +305,7 @@ impl CoreEngine {
             );
 
             // Update cache with refined results, but only if this is still the most recent search
-            let was_truncated = results.len() >= super::trigram::MAX_RESULTS;
+            let was_truncated = results.len() >= self.index.read().unwrap().max_results;
             {
                 let mut cache_guard = self.search_cache.write().unwrap();
                 let should_update = match cache_guard.as_ref() {
@@ -340,7 +346,7 @@ impl CoreEngine {
             };
 
             if should_update {
-                let was_truncated = results.len() >= super::trigram::MAX_RESULTS;
+                let was_truncated = results.len() >= idx.max_results;
                 *cache_guard = Some(SearchCache {
                     query: raw_query.to_string(),
                     sort_order,
@@ -362,6 +368,24 @@ impl CoreEngine {
         self.index.read().unwrap().bookmarks.clone()
     }
 
+    /// Mirror the current bookmark list into config.json. The config is the
+    /// source of truth at startup (bookmarks missing from it are removed from
+    /// the DB), so runtime bookmark changes must be written back or they would
+    /// silently vanish on the next launch.
+    fn persist_bookmarks_to_config(&self) {
+        let bookmarks = self.bookmarks();
+        let mut config = crate::config::AppConfig::load();
+        config.bookmarks = bookmarks
+            .iter()
+            .map(|b| crate::config::BookmarkConfig {
+                name: b.name.clone(),
+                path: b.path.clone(),
+                is_network: b.is_network,
+            })
+            .collect();
+        config.save();
+    }
+
     /// Add a new bookmark and scan its path.
     pub fn add_bookmark(&self, name: &str, path: &str, is_network: bool) {
         let bookmark = Bookmark {
@@ -376,6 +400,7 @@ impl CoreEngine {
         }
 
         let _ = self.db_tx.send(DbOp::SaveBookmark(bookmark));
+        self.persist_bookmarks_to_config();
 
         let path_buf = PathBuf::from(path);
         scan_directory(&path_buf, &self.index, &self.db_tx);
@@ -395,13 +420,15 @@ impl CoreEngine {
 
         if let Some(path) = removed_path {
             let _ = self.db_tx.send(DbOp::ClearFilesUnder(path.clone()));
+            self.persist_bookmarks_to_config();
 
-            // Remove from in-memory index
+            // Remove from in-memory index (boundary-aware: removing
+            // "/mnt/data" must not purge "/mnt/database")
             let to_remove: Vec<String> = {
                 let idx = self.index.read().unwrap();
                 idx.files
                     .values()
-                    .filter(|f| f.path.starts_with(&path))
+                    .filter(|f| path_under_root(&f.path, &path))
                     .map(|f| f.path.clone())
                     .collect()
             };
@@ -414,10 +441,18 @@ impl CoreEngine {
 
     /// Rename a bookmark.
     pub fn rename_bookmark(&self, old_name: &str, new_name: &str) {
-        let mut idx = self.index.write().unwrap();
-        if let Some(bookmark) = idx.bookmarks.iter_mut().find(|b| b.name == old_name) {
-            bookmark.name = new_name.to_string();
-            let _ = self.db_tx.send(DbOp::SaveBookmark(bookmark.clone()));
+        let renamed = {
+            let mut idx = self.index.write().unwrap();
+            if let Some(bookmark) = idx.bookmarks.iter_mut().find(|b| b.name == old_name) {
+                bookmark.name = new_name.to_string();
+                let _ = self.db_tx.send(DbOp::SaveBookmark(bookmark.clone()));
+                true
+            } else {
+                false
+            }
+        };
+        if renamed {
+            self.persist_bookmarks_to_config();
         }
     }
 

@@ -17,20 +17,9 @@ pub struct BookmarkConfig {
 pub struct AppConfig {
     #[serde(default)]
     pub bookmarks: Vec<BookmarkConfig>,
-    #[serde(default)]
-    pub last_bookmark: i32,
+    /// Per-search result cap. Hard-capped at the engine's MAX_RESULTS (2000).
     #[serde(default = "default_max_results")]
     pub max_results: i32,
-    #[serde(default)]
-    pub window_width: i32,
-    #[serde(default)]
-    pub window_height: i32,
-    #[serde(default = "default_splitter")]
-    pub splitter_sizes: Vec<i32>,
-    #[serde(default = "default_false")]
-    pub preview_visible: bool,
-    #[serde(default)]
-    pub sort_order: i32,
     #[serde(default = "default_toggle_hotkey")]
     pub toggle_hotkey: String,
     /// Locations to exclude from indexing, recursively. Absolute paths, with an
@@ -42,14 +31,6 @@ pub struct AppConfig {
 
 fn default_max_results() -> i32 {
     500
-}
-
-fn default_splitter() -> Vec<i32> {
-    vec![500, 500]
-}
-
-fn default_false() -> bool {
-    false
 }
 
 fn default_toggle_hotkey() -> String {
@@ -68,13 +49,7 @@ impl Default for AppConfig {
                 path: home,
                 is_network: false,
             }],
-            last_bookmark: 0,
-            max_results: 500,
-            window_width: 1000,
-            window_height: 650,
-            splitter_sizes: vec![500, 500],
-            preview_visible: false,
-            sort_order: 0,
+            max_results: default_max_results(),
             toggle_hotkey: default_toggle_hotkey(),
             exclude_paths: Vec::new(),
         }
@@ -87,7 +62,10 @@ impl AppConfig {
         home.join(CONFIG_DIR).join(CONFIG_FILE)
     }
 
-    /// Load config from disk, or create default.
+    /// Load config from disk, or create default. A config file that exists
+    /// but cannot be read or parsed is left untouched: overwriting it with
+    /// defaults would silently destroy the user's bookmarks and excludes over
+    /// a hand-editing typo.
     pub fn load() -> Self {
         let path = Self::config_path();
 
@@ -99,11 +77,21 @@ impl AppConfig {
                         return config;
                     }
                     Err(e) => {
-                        warn!("Failed to parse config: {}", e);
+                        warn!(
+                            "Failed to parse config ({}); using defaults without overwriting {}",
+                            e,
+                            path.display()
+                        );
+                        return Self::default();
                     }
                 },
                 Err(e) => {
-                    warn!("Failed to read config: {}", e);
+                    warn!(
+                        "Failed to read config ({}); using defaults without overwriting {}",
+                        e,
+                        path.display()
+                    );
+                    return Self::default();
                 }
             }
         }
@@ -131,6 +119,13 @@ impl AppConfig {
                 warn!("Failed to serialize config: {}", e);
             }
         }
+    }
+
+    /// The result cap to apply per search: max_results clamped to a sane
+    /// range, never above the engine's hard cap.
+    pub fn effective_max_results(&self) -> usize {
+        self.max_results
+            .clamp(1, crate::search::trigram::MAX_RESULTS as i32) as usize
     }
 
     /// Convert bookmarks to the search engine format.

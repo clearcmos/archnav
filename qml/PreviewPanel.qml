@@ -30,6 +30,8 @@ Rectangle {
                     return 2
                 case "markdown":
                     return 3
+                case "audio":
+                    return 5
                 default:
                     return 0
             }
@@ -149,6 +151,46 @@ Rectangle {
             BusyIndicator {
                 anchors.centerIn: parent
                 running: true
+            }
+        }
+
+        // Index 5: Audio preview (album art above ffprobe metadata)
+        ColumnLayout {
+            spacing: Style.marginSmall
+
+            Image {
+                id: albumArt
+                visible: source.toString() !== ""
+                Layout.fillWidth: true
+                Layout.preferredHeight: visible
+                    ? Math.min(previewRoot.height * 0.5, previewRoot.width)
+                    : 0
+                source: previewBridge && previewBridge.image_path.toString() !== ""
+                    ? "file://" + previewBridge.image_path
+                    : ""
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                cache: false
+            }
+
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+
+                TextArea {
+                    readOnly: true
+                    text: previewBridge ? previewBridge.preview_text : ""
+                    color: Style.textPreview
+                    font.family: Style.monoFont
+                    font.pixelSize: Style.fontSizePreview
+                    wrapMode: TextArea.NoWrap
+                    selectByMouse: true
+
+                    background: Rectangle {
+                        color: "transparent"
+                    }
+                }
             }
         }
     }

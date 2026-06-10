@@ -35,6 +35,14 @@ Dialog {
 
     onOpened: refreshBookmarks()
 
+    // Bookmark mutations run on background threads; refresh when they land
+    Connections {
+        target: dialog.searchEngine
+        function onBookmarksChanged() {
+            if (dialog.visible) dialog.refreshBookmarks()
+        }
+    }
+
     ListModel {
         id: bookmarkModel
     }
@@ -165,9 +173,10 @@ Dialog {
 
         // Tip text
         Label {
-            text: "Tip: Use 'bookmark-name:query' to search within a specific bookmark"
+            text: "All bookmarks are searched together. Changes are saved to ~/.config/archnav/config.json."
             color: Style.textDim
             font.pixelSize: Style.fontSizeSmall
+            wrapMode: Text.Wrap
             Layout.fillWidth: true
         }
     }

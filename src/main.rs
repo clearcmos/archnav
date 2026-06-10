@@ -53,7 +53,11 @@ fn main() {
         let cfg = config::AppConfig::load();
         let bookmarks = cfg.to_bookmarks();
         println!("Loading search index...");
-        let engine = search::engine::CoreEngine::new(bookmarks, cfg.expanded_exclude_paths());
+        let engine = search::engine::CoreEngine::new(
+            bookmarks,
+            cfg.expanded_exclude_paths(),
+            cfg.effective_max_results(),
+        );
         println!("Indexed {} files\n", engine.file_count());
 
         // Run each query
@@ -76,7 +80,11 @@ fn main() {
         let bookmarks = cfg.to_bookmarks();
         println!("Loading search index...");
         let load_start = std::time::Instant::now();
-        let engine = search::engine::CoreEngine::new(bookmarks, cfg.expanded_exclude_paths());
+        let engine = search::engine::CoreEngine::new(
+            bookmarks,
+            cfg.expanded_exclude_paths(),
+            cfg.effective_max_results(),
+        );
         let load_time = load_start.elapsed();
         let file_count = engine.file_count();
         println!("Loaded {} files in {:.2?}\n", file_count, load_time);
@@ -156,13 +164,28 @@ fn main() {
         std::process::exit(0);
     }
 
+    // Single instance: two copies would fight over the toggle socket and the
+    // database (with conflicting in-memory id allocators). If one is already
+    // running, a plain launch toggles it instead; a --hidden autostart launch
+    // just exits quietly so a stray re-run can't pop the window.
+    let start_hidden = args.iter().any(|a| a == "--hidden");
+    if start_hidden {
+        if toggle::instance_running() {
+            tracing::info!("archnav already running; exiting (--hidden)");
+            std::process::exit(0);
+        }
+    } else if toggle::send_toggle() {
+        tracing::info!("archnav already running; toggled existing instance");
+        std::process::exit(0);
+    }
+
     tracing::info!("archnav v0.1.0 starting");
 
     // Start hidden (minimized to tray) when requested. The login autostart entry
     // uses this so the index preloads at boot and lives in the tray without ever
     // popping the window. QML reads the flag via SearchEngine::start_hidden().
     // Set here, before any threads spawn or QML loads, so the read is race-free.
-    if args.iter().any(|a| a == "--hidden") {
+    if start_hidden {
         std::env::set_var("ARCHNAV_START_HIDDEN", "1");
         tracing::info!("Starting hidden (minimized to tray)");
     }
