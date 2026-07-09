@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **Pending security dependency upgrades:** two deferred Aikido/RUSTSEC advisories
+> (`cxx` via a cxx-qt 0.8->0.9 migration, `mio` via a notify 6->8 bump) are
+> documented with full steps in [`SECURITY-UPGRADES.md`](SECURITY-UPGRADES.md).
+> Both are low-severity and currently marked won't-fix in Aikido; not urgent.
+
 ## Project Overview
 
 archnav is a fast, keyboard-centric file navigator for KDE Wayland on Arch Linux. It provides instant search across hundreds of thousands of files using trigram indexing, with a Qt/QML GUI.
