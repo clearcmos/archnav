@@ -2,18 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **Pending security dependency upgrades:** two deferred Aikido/RUSTSEC advisories
-> (`cxx` via a cxx-qt 0.8->0.9 migration, `mio` via a notify 6->8 bump) are
-> documented with full steps in [`SECURITY-UPGRADES.md`](SECURITY-UPGRADES.md).
-> Both are low-severity and currently marked won't-fix in Aikido; not urgent.
-
 ## Project Overview
 
 archnav is a fast, keyboard-centric file navigator for KDE Wayland on Arch Linux. It provides instant search across hundreds of thousands of files using trigram indexing, with a Qt/QML GUI.
 
 ## Architecture
 
-**Unified Rust application** using cxx-qt 0.8 for Qt/QML bindings:
+**Unified Rust application** using cxx-qt 0.9 for Qt/QML bindings:
 
 ```
 src/
@@ -97,9 +92,13 @@ A root-level `PKGBUILD` (`pkgname=archnav-git`) pulls from the github remote, bu
 
 ## Key Technologies
 
-- **cxx-qt 0.8**: Rust-Qt bindings for QObjects and QML integration
+- **cxx-qt 0.9**: Rust-Qt bindings for QObjects and QML integration. The `cxx`
+  and `cxx-gen` crates stamp their exact version into the generated bridge
+  symbols (`cxxbridge1$NNN$...`) and must stay in lockstep, or the final link
+  fails with undefined `cxxbridge1$...` symbols. Update them together:
+  `cargo update -p cxx -p cxx-gen`
 - **SQLite (rusqlite)**: Persistent index storage with posting list cache
-- **notify 6**: Cross-platform filesystem watcher (inotify on Linux)
+- **notify 8**: Cross-platform filesystem watcher (inotify on Linux)
 - **walkdir**: Fast recursive directory traversal
 - **QML/Qt Quick**: Declarative UI with dark theme
 - **Qt DBus**: For freedesktop FileManager1 integration (file properties dialog)

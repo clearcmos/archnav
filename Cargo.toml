@@ -7,13 +7,16 @@ license = "MIT"
 
 [dependencies]
 # Qt/QML bridge
+# cxx and cxx-gen (a cxx-qt-build dependency) stamp their exact version into
+# the generated bridge symbols; the link fails if they drift apart. Update
+# them together: cargo update -p cxx -p cxx-gen
 cxx = "1.0.95"
-cxx-qt = "0.8"
-cxx-qt-lib = { version = "0.8", features = ["qt_full"] }
+cxx-qt = "0.9"
+cxx-qt-lib = { version = "0.9", features = ["qt_full"] }
 
 # Search engine
 rusqlite = { version = "0.31", features = ["bundled"] }
-notify = { version = "6", features = ["serde"] }
+notify = { version = "8", features = ["serde"] }
 walkdir = "2"
 regex = "1"
 regex-syntax = "0.8"
@@ -41,7 +44,7 @@ dirs = "5"
 libc = "0.2"
 
 [build-dependencies]
-cxx-qt-build = { version = "0.8", features = ["link_qt_object_files"] }
+cxx-qt-build = { version = "0.9", features = ["link_qt_object_files"] }
 
 [profile.dev]
 opt-level = 1
