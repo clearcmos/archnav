@@ -27,8 +27,7 @@ struct SearchAllRequest {
 }
 
 fn socket_path() -> String {
-    std::env::var("XDG_RUNTIME_DIR")
-        .unwrap_or_else(|_| "/run/user/1000".to_string())
+    std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string())
         + "/archnav-daemon.sock"
 }
 

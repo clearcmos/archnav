@@ -29,15 +29,15 @@ impl AccessInfo {
 
         let hours_ago = (now - self.last_opened) as f64 / 3600.0;
         let recency_weight = if hours_ago < 1.0 {
-            4.0  // Last hour: 4x
+            4.0 // Last hour: 4x
         } else if hours_ago < 24.0 {
-            2.0  // Last day: 2x
+            2.0 // Last day: 2x
         } else if hours_ago < 168.0 {
-            1.5  // Last week: 1.5x
+            1.5 // Last week: 1.5x
         } else if hours_ago < 720.0 {
-            1.0  // Last month: 1x
+            1.0 // Last month: 1x
         } else {
-            0.5  // Older: 0.5x
+            0.5 // Older: 0.5x
         };
 
         // Log scale for frequency to prevent runaway counts
@@ -48,21 +48,29 @@ impl AccessInfo {
 pub const MAX_RESULTS: usize = 2000;
 
 const BINARY_EXTENSIONS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "svg", "tiff", "raw",
-    "mp3", "mp4", "wav", "avi", "mkv", "mov", "flac", "ogg", "m4a", "aac",
-    "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-    "zip", "tar", "gz", "bz2", "xz", "7z", "rar", "zst",
-    "exe", "dll", "so", "dylib", "a", "o", "obj",
-    "bin", "dat", "db", "sqlite", "sqlite3",
-    "ttf", "otf", "woff", "woff2", "eot",
-    "class", "jar", "war", "pyc", "pyo", "whl",
-    "min.js", "min.css",
+    "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "svg", "tiff", "raw", "mp3", "mp4", "wav",
+    "avi", "mkv", "mov", "flac", "ogg", "m4a", "aac", "pdf", "doc", "docx", "xls", "xlsx", "ppt",
+    "pptx", "zip", "tar", "gz", "bz2", "xz", "7z", "rar", "zst", "exe", "dll", "so", "dylib", "a",
+    "o", "obj", "bin", "dat", "db", "sqlite", "sqlite3", "ttf", "otf", "woff", "woff2", "eot",
+    "class", "jar", "war", "pyc", "pyo", "whl", "min.js", "min.css",
 ];
 
 pub const EXCLUDE_PATTERNS: &[&str] = &[
-    ".git", "node_modules", "__pycache__", ".cache", ".npm", ".cargo",
-    "target", "build", "dist", ".next", ".nuxt", ".Trash", "Trash",
-    ".steam", "dosdevices", // Wine/Proton paths with z: symlink to root
+    ".git",
+    "node_modules",
+    "__pycache__",
+    ".cache",
+    ".npm",
+    ".cargo",
+    "target",
+    "build",
+    "dist",
+    ".next",
+    ".nuxt",
+    ".Trash",
+    "Trash",
+    ".steam",
+    "dosdevices", // Wine/Proton paths with z: symlink to root
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,7 +170,13 @@ impl TrigramIndex {
     }
 
     /// Add a file to the index. Returns (file_id, trigrams) for persistence.
-    pub fn add(&mut self, path: String, is_dir: bool, mtime: i64, size: u64) -> (u32, Vec<[u8; 3]>) {
+    pub fn add(
+        &mut self,
+        path: String,
+        is_dir: bool,
+        mtime: i64,
+        size: u64,
+    ) -> (u32, Vec<[u8; 3]>) {
         // Check if already exists — update metadata
         if let Some(&existing_id) = self.path_to_id.get(&path) {
             if let Some(entry) = self.files.get_mut(&existing_id) {
@@ -259,7 +273,10 @@ impl TrigramIndex {
                 // Glob patterns are hard to extract trigrams from; scan all
                 self.files.keys().copied().collect()
             }
-            QueryMode::Fuzzy { query, max_distance } => {
+            QueryMode::Fuzzy {
+                query,
+                max_distance,
+            } => {
                 // For fuzzy matching, trigram-based narrowing doesn't work well because
                 // typos change the trigrams. For short queries or high edit distance,
                 // scan all files. For longer queries, use lenient trigram matching.
@@ -299,11 +316,7 @@ impl TrigramIndex {
 
         let mut iter = trigrams.iter();
         let first = iter.next().unwrap();
-        let mut candidates = self
-            .trigrams
-            .get(first)
-            .cloned()
-            .unwrap_or_default();
+        let mut candidates = self.trigrams.get(first).cloned().unwrap_or_default();
 
         for trigram in iter {
             if let Some(set) = self.trigrams.get(trigram) {
@@ -345,7 +358,10 @@ impl TrigramIndex {
                     .unwrap_or(path);
                 matcher.is_match(filename) || matcher.is_match(path)
             }
-            QueryMode::Fuzzy { query: q, max_distance } => {
+            QueryMode::Fuzzy {
+                query: q,
+                max_distance,
+            } => {
                 if q.is_empty() {
                     return true;
                 }
@@ -376,7 +392,8 @@ impl TrigramIndex {
 
                 // If query is longer than filename, compare directly
                 if q_len >= stem_len {
-                    return super::query::levenshtein_bounded(&q_lower, &name_stem, *max_distance).is_some();
+                    return super::query::levenshtein_bounded(&q_lower, &name_stem, *max_distance)
+                        .is_some();
                 }
 
                 // Try sliding window of length q_len +/- max_distance
@@ -385,8 +402,11 @@ impl TrigramIndex {
 
                 for window_size in min_window..=max_window {
                     for start in 0..=stem_len.saturating_sub(window_size) {
-                        let window: String = stem_chars[start..start + window_size].iter().collect();
-                        if super::query::levenshtein_bounded(&q_lower, &window, *max_distance).is_some() {
+                        let window: String =
+                            stem_chars[start..start + window_size].iter().collect();
+                        if super::query::levenshtein_bounded(&q_lower, &window, *max_distance)
+                            .is_some()
+                        {
                             return true;
                         }
                     }
@@ -441,9 +461,7 @@ impl TrigramIndex {
 
                 // Extension filter
                 if let Some(ref ext_filter) = query.extension_filter {
-                    if let Some(ext) =
-                        Path::new(&entry.path).extension().and_then(|e| e.to_str())
-                    {
+                    if let Some(ext) = Path::new(&entry.path).extension().and_then(|e| e.to_str()) {
                         if ext.to_lowercase() != ext_filter.to_lowercase() {
                             return false;
                         }
@@ -463,13 +481,22 @@ impl TrigramIndex {
             })
             .collect();
 
-        sort_results(&mut results, query.sort_order, &self.path_to_id, &self.access_data);
+        sort_results(
+            &mut results,
+            query.sort_order,
+            &self.path_to_id,
+            &self.access_data,
+        );
         results.truncate(self.max_results);
         results
     }
 
     /// Search all bookmarks at once (faster than multiple searches)
-    pub fn search_all(&self, query: &ParsedQuery, bookmark_paths: &[String]) -> Vec<SearchAllResult> {
+    pub fn search_all(
+        &self,
+        query: &ParsedQuery,
+        bookmark_paths: &[String],
+    ) -> Vec<SearchAllResult> {
         let bookmark_map: HashMap<&str, &str> = self
             .bookmarks
             .iter()
@@ -526,7 +553,9 @@ impl TrigramIndex {
                 // Extension filter
                 if let Some(ref ext_filter) = query.extension_filter {
                     {
-                        let ext = Path::new(&entry.path).extension().and_then(|e| e.to_str())?;
+                        let ext = Path::new(&entry.path)
+                            .extension()
+                            .and_then(|e| e.to_str())?;
                         if ext.to_lowercase() != ext_filter.to_lowercase() {
                             return None;
                         }
@@ -548,7 +577,12 @@ impl TrigramIndex {
             })
             .collect();
 
-        sort_all_results(&mut results, query.sort_order, &self.path_to_id, &self.access_data);
+        sort_all_results(
+            &mut results,
+            query.sort_order,
+            &self.path_to_id,
+            &self.access_data,
+        );
         results.truncate(self.max_results);
         results
     }
@@ -650,7 +684,12 @@ impl TrigramIndex {
             }
         }
 
-        sort_all_results(&mut results, query.sort_order, &self.path_to_id, &self.access_data);
+        sort_all_results(
+            &mut results,
+            query.sort_order,
+            &self.path_to_id,
+            &self.access_data,
+        );
         results.truncate(self.max_results);
         results
     }
@@ -690,7 +729,9 @@ fn sort_results(
                 .and_then(|id| access_data.get(id))
                 .map(|ai| ai.frecency_score())
                 .unwrap_or(0.0);
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         }),
     }
 }
@@ -729,7 +770,9 @@ fn sort_all_results(
                 .and_then(|id| access_data.get(id))
                 .map(|ai| ai.frecency_score())
                 .unwrap_or(0.0);
-            score_b.partial_cmp(&score_a).unwrap_or(std::cmp::Ordering::Equal)
+            score_b
+                .partial_cmp(&score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
         }),
     }
 }
@@ -889,7 +932,11 @@ mod tests {
         assert_eq!(results[0].path, "/mnt/data/file.txt");
 
         let all = index.search_all(&query, &[]);
-        assert_eq!(all.len(), 1, "sibling-prefix paths must not be attributed to a bookmark");
+        assert_eq!(
+            all.len(),
+            1,
+            "sibling-prefix paths must not be attributed to a bookmark"
+        );
         assert_eq!(all[0].bookmark, "data");
     }
 

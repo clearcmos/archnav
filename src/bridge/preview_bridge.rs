@@ -22,7 +22,12 @@ pub mod qobject {
         fn previewReady(self: Pin<&mut PreviewBridge>);
 
         #[qinvokable]
-        fn request_preview(self: Pin<&mut PreviewBridge>, path: QString, is_dir: bool, content_width: i32);
+        fn request_preview(
+            self: Pin<&mut PreviewBridge>,
+            path: QString,
+            is_dir: bool,
+            content_width: i32,
+        );
 
         #[qinvokable]
         fn clear_preview(self: Pin<&mut PreviewBridge>);
@@ -31,9 +36,9 @@ pub mod qobject {
     impl cxx_qt::Threading for PreviewBridge {}
 }
 
-use std::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
+use std::pin::Pin;
 
 /// Rust backing struct for the PreviewBridge QObject.
 pub struct PreviewBridgeRust {
@@ -72,7 +77,7 @@ impl qobject::PreviewBridge {
         self.as_mut().set_is_loading(true);
 
         let qt_thread = self.qt_thread();
-        let width = content_width.max(100) as u32;  // Minimum 100px
+        let width = content_width.max(100) as u32; // Minimum 100px
 
         let seq_counter = self.rust().preview_seq.clone();
         let my_seq = seq_counter.fetch_add(1, Ordering::SeqCst) + 1;
@@ -86,8 +91,7 @@ impl qobject::PreviewBridge {
                 }
                 qobj.as_mut()
                     .set_preview_type(QString::from(&*result.preview_type));
-                qobj.as_mut()
-                    .set_preview_text(QString::from(&*result.text));
+                qobj.as_mut().set_preview_text(QString::from(&*result.text));
                 qobj.as_mut()
                     .set_image_path(QString::from(&*result.image_path));
                 qobj.as_mut().set_is_loading(false);

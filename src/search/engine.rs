@@ -1,15 +1,15 @@
+use notify::RecommendedWatcher;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
 use std::thread;
-use notify::RecommendedWatcher;
-use tracing::{info, warn, debug};
+use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
 
-use super::database::{Database, DbOp, start_db_thread};
+use super::database::{start_db_thread, Database, DbOp};
 use super::integrity::{start_integrity_checker, start_network_scanner};
 use super::query::{ParsedQuery, QueryMode, SortOrder};
-use super::scanner::{is_network_mount, path_under_root, scan_directory, reconcile_directory};
+use super::scanner::{is_network_mount, path_under_root, reconcile_directory, scan_directory};
 use super::trigram::{Bookmark, SearchAllResult, TrigramIndex, MAX_RESULTS};
 use super::watcher::start_watcher;
 
@@ -118,7 +118,10 @@ impl CoreEngine {
                 // Add new bookmarks from config that aren't in DB
                 for bm in &bookmarks {
                     if !idx.bookmarks.iter().any(|b| b.name == bm.name) {
-                        info!("Adding new bookmark from config: {} -> {}", bm.name, bm.path);
+                        info!(
+                            "Adding new bookmark from config: {} -> {}",
+                            bm.name, bm.path
+                        );
                         idx.bookmarks.push(bm.clone());
                     }
                 }
@@ -280,7 +283,10 @@ impl CoreEngine {
         // Get a sequence number for this search
         let my_seq = self.search_seq.fetch_add(1, Ordering::SeqCst) + 1;
 
-        debug!("[ENGINE] search start: query='{}', seq={}", raw_query, my_seq);
+        debug!(
+            "[ENGINE] search start: query='{}', seq={}",
+            raw_query, my_seq
+        );
 
         // Check if we can use cached results
         // Extract cache data while holding read lock, then release before write
@@ -339,7 +345,10 @@ impl CoreEngine {
                         was_truncated,
                     });
                 } else {
-                    debug!("[ENGINE] Cache HIT but not updating (seq {} <= existing)", my_seq);
+                    debug!(
+                        "[ENGINE] Cache HIT but not updating (seq {} <= existing)",
+                        my_seq
+                    );
                 }
             }
 
@@ -349,9 +358,17 @@ impl CoreEngine {
         // Full search
         let idx = self.index.read().unwrap();
         let query = ParsedQuery::parse(raw_query, sort_order);
-        debug!("[ENGINE] Cache MISS: '{}', seq={}, doing full search", raw_query, my_seq);
+        debug!(
+            "[ENGINE] Cache MISS: '{}', seq={}, doing full search",
+            raw_query, my_seq
+        );
         let results = idx.search_all(&query, &[]);
-        debug!("[ENGINE] Full search complete: '{}', seq={}, results={}", raw_query, my_seq, results.len());
+        debug!(
+            "[ENGINE] Full search complete: '{}', seq={}, results={}",
+            raw_query,
+            my_seq,
+            results.len()
+        );
 
         // Only update cache if this is still the most recent search
         // This prevents slow searches from overwriting newer results
@@ -373,7 +390,10 @@ impl CoreEngine {
                     was_truncated,
                 });
             } else {
-                debug!("Discarding stale search results for '{}' (seq {} < cached)", raw_query, my_seq);
+                debug!(
+                    "Discarding stale search results for '{}' (seq {} < cached)",
+                    raw_query, my_seq
+                );
             }
         }
 
@@ -510,7 +530,9 @@ impl CoreEngine {
             }
 
             // Persist to database
-            let _ = self.db_tx.send(super::database::DbOp::RecordFileOpen(id, now));
+            let _ = self
+                .db_tx
+                .send(super::database::DbOp::RecordFileOpen(id, now));
         }
     }
 
@@ -528,7 +550,12 @@ impl CoreEngine {
 
     pub fn test_search(&self, query: &str) -> usize {
         let (results, elapsed) = self.search(query, 0);
-        println!("Search '{}': {} results in {:?}", query, results.len(), elapsed);
+        println!(
+            "Search '{}': {} results in {:?}",
+            query,
+            results.len(),
+            elapsed
+        );
         if !results.is_empty() {
             for r in results.iter().take(3) {
                 println!("  - {}", r.path);

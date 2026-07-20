@@ -159,10 +159,13 @@ impl Database {
     fn load_access_into_index(&self, index: &mut TrigramIndex) {
         let data = self.load_access_data();
         for (file_id, (open_count, last_opened)) in data {
-            index.access_data.insert(file_id, AccessInfo {
-                open_count,
-                last_opened,
-            });
+            index.access_data.insert(
+                file_id,
+                AccessInfo {
+                    open_count,
+                    last_opened,
+                },
+            );
         }
         if !index.access_data.is_empty() {
             info!("Loaded {} file access records", index.access_data.len());
@@ -448,9 +451,8 @@ impl Database {
         tx.execute("DELETE FROM posting_lists", [])?;
 
         {
-            let mut stmt = tx.prepare(
-                "INSERT INTO posting_lists (trigram, file_ids) VALUES (?1, ?2)",
-            )?;
+            let mut stmt =
+                tx.prepare("INSERT INTO posting_lists (trigram, file_ids) VALUES (?1, ?2)")?;
 
             for (trigram, ids) in &index.trigrams {
                 let trigram_blob = trigram.as_slice();
@@ -605,9 +607,10 @@ impl Database {
     pub fn load_access_data(&self) -> std::collections::HashMap<u32, (u32, i64)> {
         let mut data = std::collections::HashMap::new();
 
-        let mut stmt = match self.conn.prepare(
-            "SELECT file_id, open_count, last_opened FROM file_access"
-        ) {
+        let mut stmt = match self
+            .conn
+            .prepare("SELECT file_id, open_count, last_opened FROM file_access")
+        {
             Ok(s) => s,
             Err(_) => return data,
         };
@@ -634,7 +637,9 @@ impl Database {
 /// Escape SQLite LIKE wildcards so a literal path can be used as a prefix
 /// pattern (paired with ESCAPE '\' in the query).
 fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// Pack trigrams into a BLOB (3 bytes per trigram, concatenated).
@@ -698,7 +703,10 @@ pub fn start_db_thread(db: Database) -> Sender<DbOp> {
                     }
                 }
                 Err(e) => {
-                    warn!("Failed to open DB transaction, falling back to autocommit: {}", e);
+                    warn!(
+                        "Failed to open DB transaction, falling back to autocommit: {}",
+                        e
+                    );
                     for op in ops {
                         db.process_op(op);
                     }
@@ -782,7 +790,11 @@ mod fast_load_tests {
             // And the extension-filtered form the user actually typed.
             let q = ParsedQuery::parse("otto *.mkv", SortOrder::MtimeDesc);
             let results = idx.search_all(&q, &[]);
-            assert_eq!(results.len(), 1, "`otto *.mkv` must match exactly the backfilled file");
+            assert_eq!(
+                results.len(),
+                1,
+                "`otto *.mkv` must match exactly the backfilled file"
+            );
         }
 
         cleanup(&path);
@@ -811,7 +823,10 @@ mod fast_load_tests {
             db.clear_files_under("/mnt/data");
             db.clear_files_under("/mnt/my_dir");
 
-            let mut stmt = db.conn.prepare("SELECT path FROM files ORDER BY path").unwrap();
+            let mut stmt = db
+                .conn
+                .prepare("SELECT path FROM files ORDER BY path")
+                .unwrap();
             let remaining: Vec<String> = stmt
                 .query_map([], |r| r.get(0))
                 .unwrap()
@@ -819,7 +834,10 @@ mod fast_load_tests {
                 .collect();
             assert_eq!(
                 remaining,
-                vec!["/mnt/database/b.txt".to_string(), "/mnt/myxdir/d.txt".to_string()]
+                vec![
+                    "/mnt/database/b.txt".to_string(),
+                    "/mnt/myxdir/d.txt".to_string()
+                ]
             );
         }
 

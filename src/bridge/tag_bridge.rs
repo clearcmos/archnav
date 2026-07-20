@@ -36,9 +36,9 @@ pub mod qobject {
     impl cxx_qt::Threading for TagBridge {}
 }
 
-use std::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
+use std::pin::Pin;
 
 use crate::tagstore::{self, TagLookup};
 

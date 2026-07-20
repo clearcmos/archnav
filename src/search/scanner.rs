@@ -235,7 +235,10 @@ pub fn reconcile_directory(
     if added > 0 {
         info!("Reconciliation added {} new files in {:?}", added, elapsed);
     } else {
-        info!("Reconciliation complete, no new files found ({:?})", elapsed);
+        info!(
+            "Reconciliation complete, no new files found ({:?})",
+            elapsed
+        );
     }
 
     added

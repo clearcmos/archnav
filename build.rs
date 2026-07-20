@@ -1,6 +1,6 @@
-use cxx_qt_build::{CxxQtBuilder, QmlModule, QmlFile};
-use std::process::Command;
+use cxx_qt_build::{CxxQtBuilder, QmlFile, QmlModule};
 use std::path::PathBuf;
+use std::process::Command;
 
 fn main() {
     // Run MOC on system_tray.cpp to generate system_tray.moc
@@ -37,9 +37,11 @@ fn main() {
         moc_cmd.arg(arg);
     }
     moc_cmd
-        .arg("-I").arg("src")
+        .arg("-I")
+        .arg("src")
         .arg("src/system_tray.cpp")
-        .arg("-o").arg(&moc_output);
+        .arg("-o")
+        .arg(&moc_output);
 
     let moc_status = moc_cmd.status();
     match moc_status {
@@ -117,8 +119,13 @@ fn main() {
             let kf6_include = "/usr/include/KF6";
             cc.flag(format!("-isystem{}", kf6_include));
             for subdir in [
-                "KService", "KIOCore", "KIOGui", "KIO",
-                "KCoreAddons", "KConfig", "KConfigCore",
+                "KService",
+                "KIOCore",
+                "KIOGui",
+                "KIO",
+                "KCoreAddons",
+                "KConfig",
+                "KConfigCore",
             ] {
                 let path = format!("{}/{}", kf6_include, subdir);
                 if std::path::Path::new(&path).is_dir() {

@@ -28,7 +28,10 @@ fn markdown_to_html(markdown: &str, base_dir: &str, content_width: u32) -> Strin
     // Set image widths and resolve relative paths
     let html_output = process_images(&html_output, base_dir, content_width);
 
-    format!(r#"<html><body style="font-family: sans-serif;">{}</body></html>"#, html_output)
+    format!(
+        r#"<html><body style="font-family: sans-serif;">{}</body></html>"#,
+        html_output
+    )
 }
 
 /// Process images: set width and resolve relative paths.
@@ -120,7 +123,11 @@ mod tests {
         std::fs::write(&path, &big).unwrap();
 
         let out = preview_text(path.to_str().unwrap());
-        assert!(out.len() < MAX_PREVIEW_BYTES + 200, "output must be capped, got {}", out.len());
+        assert!(
+            out.len() < MAX_PREVIEW_BYTES + 200,
+            "output must be capped, got {}",
+            out.len()
+        );
         assert!(out.contains("Truncated"));
 
         let _ = std::fs::remove_file(&path);

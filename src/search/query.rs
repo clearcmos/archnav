@@ -7,16 +7,19 @@ pub enum QueryMode {
     Regex(Regex),
     Glob(globset::GlobMatcher),
     /// Fuzzy matching with maximum edit distance
-    Fuzzy { query: String, max_distance: usize },
+    Fuzzy {
+        query: String,
+        max_distance: usize,
+    },
 }
 
 /// Calculate the maximum allowed edit distance based on query length.
 fn max_distance_for_query(query_len: usize) -> usize {
     match query_len {
-        0..=3 => 0,   // Too short for fuzzy - exact match only
-        4..=6 => 1,   // 1 typo allowed
-        7..=12 => 2,  // 2 typos allowed
-        _ => 3,       // 3 typos max
+        0..=3 => 0,  // Too short for fuzzy - exact match only
+        4..=6 => 1,  // 1 typo allowed
+        7..=12 => 2, // 2 typos allowed
+        _ => 3,      // 3 typos max
     }
 }
 
@@ -45,9 +48,7 @@ pub fn levenshtein_bounded(a: &str, b: &str, max_dist: usize) -> Option<usize> {
 
         for (j, cb) in b.chars().enumerate() {
             let cost = if ca == cb { 0 } else { 1 };
-            curr[j + 1] = (prev[j] + cost)
-                .min(prev[j + 1] + 1)
-                .min(curr[j] + 1);
+            curr[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(curr[j] + 1);
             min_in_row = min_in_row.min(curr[j + 1]);
         }
 
@@ -182,7 +183,10 @@ impl ParsedQuery {
     pub fn matches_path(&self, path: &str) -> bool {
         // Check extension filter first
         if let Some(ref ext_filter) = self.extension_filter {
-            if let Some(ext) = std::path::Path::new(path).extension().and_then(|e| e.to_str()) {
+            if let Some(ext) = std::path::Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+            {
                 if ext.to_lowercase() != ext_filter.to_lowercase() {
                     return false;
                 }
@@ -214,7 +218,10 @@ impl ParsedQuery {
                     .unwrap_or(path);
                 matcher.is_match(filename) || matcher.is_match(path)
             }
-            QueryMode::Fuzzy { query, max_distance } => {
+            QueryMode::Fuzzy {
+                query,
+                max_distance,
+            } => {
                 if query.is_empty() {
                     return true;
                 }
@@ -265,7 +272,10 @@ impl ParsedQuery {
             && raw_trimmed.is_char_boundary(FOLDER_PREFIX_LEN)
             && raw_trimmed[..FOLDER_PREFIX_LEN].eq_ignore_ascii_case("folder:");
         let (file_type_mode, raw_effective) = if has_folder_prefix {
-            (FileTypeMode::GotoDir, raw_trimmed[FOLDER_PREFIX_LEN..].trim_start())
+            (
+                FileTypeMode::GotoDir,
+                raw_trimmed[FOLDER_PREFIX_LEN..].trim_start(),
+            )
         } else {
             (FileTypeMode::All, raw_trimmed)
         };
@@ -275,8 +285,7 @@ impl ParsedQuery {
         let mut query_tokens: Vec<&str> = Vec::new();
         let mut tag_filters: Vec<TagFilter> = Vec::new();
 
-        let is_tag_token =
-            |t: &str| t.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("t:"));
+        let is_tag_token = |t: &str| t.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("t:"));
 
         let mut i = 0;
         while i < tokens.len() {
@@ -442,7 +451,9 @@ impl ParsedQuery {
     /// syntax; an empty group (bare "t:") requires any tag at all.
     pub fn tags_match(&self, tags: &[String]) -> bool {
         let tags_lower: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
-        self.tag_filters.iter().all(|filter| filter.matches(&tags_lower))
+        self.tag_filters
+            .iter()
+            .all(|filter| filter.matches(&tags_lower))
     }
 
     /// Whether this query restricts results to directories only.
@@ -562,14 +573,19 @@ mod tests {
     #[test]
     fn test_parse_fuzzy() {
         let q = ParsedQuery::parse("~confg", SortOrder::MtimeDesc);
-        assert!(matches!(q.mode, QueryMode::Fuzzy { ref query, max_distance: 1 } if query == "confg"));
+        assert!(
+            matches!(q.mode, QueryMode::Fuzzy { ref query, max_distance: 1 } if query == "confg")
+        );
     }
 
     #[test]
     fn test_parse_path_aware() {
         let q = ParsedQuery::parse("src/config", SortOrder::MtimeDesc);
         assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "config"));
-        assert_eq!(q.path_segments, Some(vec!["src".to_string(), "config".to_string()]));
+        assert_eq!(
+            q.path_segments,
+            Some(vec!["src".to_string(), "config".to_string()])
+        );
     }
 
     #[test]
@@ -633,7 +649,13 @@ mod tests {
     fn test_parse_multibyte_query_does_not_panic() {
         // Regression: the folder: prefix check sliced raw_trimmed[..7] by byte
         // offset, which panics when byte 7 is inside a multibyte character.
-        for q in ["éééé", "ééééééé", "日本語データ", "héllo wörld", "folder:éé"] {
+        for q in [
+            "éééé",
+            "ééééééé",
+            "日本語データ",
+            "héllo wörld",
+            "folder:éé",
+        ] {
             let parsed = ParsedQuery::parse(q, SortOrder::MtimeDesc);
             assert!(matches!(parsed.mode, QueryMode::Substring(_)));
         }
@@ -667,7 +689,10 @@ mod tests {
     }
 
     fn alts(q: &ParsedQuery) -> Vec<Vec<Vec<String>>> {
-        q.tag_filters.iter().map(|f| f.alternatives.clone()).collect()
+        q.tag_filters
+            .iter()
+            .map(|f| f.alternatives.clone())
+            .collect()
     }
 
     fn group(alternatives: &[&[&str]]) -> Vec<Vec<String>> {
@@ -704,10 +729,21 @@ mod tests {
 
     #[test]
     fn test_parse_tag_filter_ampersand_forms_are_and() {
-        for raw in ["t: coffee&outdoor", "t: coffee & outdoor", "t: coffee AND outdoor"] {
+        for raw in [
+            "t: coffee&outdoor",
+            "t: coffee & outdoor",
+            "t: coffee AND outdoor",
+        ] {
             let q = ParsedQuery::parse(raw, SortOrder::MtimeDesc);
-            assert_eq!(alts(&q), vec![group(&[&["coffee", "outdoor"]])], "raw: {raw}");
-            assert!(q.tags_match(&["coffee".into(), "outdoor".into()]), "raw: {raw}");
+            assert_eq!(
+                alts(&q),
+                vec![group(&[&["coffee", "outdoor"]])],
+                "raw: {raw}"
+            );
+            assert!(
+                q.tags_match(&["coffee".into(), "outdoor".into()]),
+                "raw: {raw}"
+            );
             assert!(!q.tags_match(&["coffee".into()]), "raw: {raw}");
         }
     }
@@ -733,8 +769,15 @@ mod tests {
             "t:coffee&outdoor",
         ] {
             let q = ParsedQuery::parse(raw, SortOrder::MtimeDesc);
-            assert_eq!(alts(&q), vec![group(&[&["coffee", "outdoor"]])], "raw: {raw}");
-            assert!(matches!(q.mode, QueryMode::Substring(ref s) if s.is_empty()), "raw: {raw}");
+            assert_eq!(
+                alts(&q),
+                vec![group(&[&["coffee", "outdoor"]])],
+                "raw: {raw}"
+            );
+            assert!(
+                matches!(q.mode, QueryMode::Substring(ref s) if s.is_empty()),
+                "raw: {raw}"
+            );
         }
         // OR connective on the attached form
         let q = ParsedQuery::parse("t:coffee OR outdoor", SortOrder::MtimeDesc);

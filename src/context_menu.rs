@@ -32,13 +32,7 @@ impl ContextMenu {
     pub fn show(&self, path: &str, x: i32, y: i32) {
         if let Ok(c_path) = CString::new(path) {
             unsafe {
-                show_context_menu(
-                    self.handler,
-                    c_path.as_ptr(),
-                    x,
-                    y,
-                    std::ptr::null_mut(),
-                );
+                show_context_menu(self.handler, c_path.as_ptr(), x, y, std::ptr::null_mut());
             }
         }
     }

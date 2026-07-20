@@ -34,13 +34,11 @@ pub fn generate_preview(path: &str, is_dir: bool, content_width: u32) -> Preview
 
     match ext.as_str() {
         // Images — handled by QML directly
-        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "tiff" | "ico" => {
-            PreviewResult {
-                preview_type: "image".to_string(),
-                text: image_info(path),
-                image_path: path.to_string(),
-            }
-        }
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "tiff" | "ico" => PreviewResult {
+            preview_type: "image".to_string(),
+            text: image_info(path),
+            image_path: path.to_string(),
+        },
 
         // PDF — render pages with pdftoppm
         "pdf" => {
@@ -73,53 +71,40 @@ pub fn generate_preview(path: &str, is_dir: bool, content_width: u32) -> Preview
         }
 
         // Archives
-        "zip" | "jar" | "war" | "apk" => {
-            PreviewResult {
-                preview_type: "archive".to_string(),
-                text: archive::preview_zip(path),
-                image_path: String::new(),
-            }
-        }
-        "tar" => {
-            PreviewResult {
-                preview_type: "archive".to_string(),
-                text: archive::preview_tar(path, None),
-                image_path: String::new(),
-            }
-        }
-        "gz" | "tgz" => {
-            PreviewResult {
-                preview_type: "archive".to_string(),
-                text: archive::preview_tar(path, Some("gz")),
-                image_path: String::new(),
-            }
-        }
-        "bz2" => {
-            PreviewResult {
-                preview_type: "archive".to_string(),
-                text: archive::preview_tar(path, Some("bz2")),
-                image_path: String::new(),
-            }
-        }
-        "xz" => {
-            PreviewResult {
-                preview_type: "archive".to_string(),
-                text: archive::preview_tar(path, Some("xz")),
-                image_path: String::new(),
-            }
-        }
-        "7z" | "rar" | "zst" => {
-            PreviewResult {
-                preview_type: "archive".to_string(),
-                text: archive::preview_subprocess(path),
-                image_path: String::new(),
-            }
-        }
+        "zip" | "jar" | "war" | "apk" => PreviewResult {
+            preview_type: "archive".to_string(),
+            text: archive::preview_zip(path),
+            image_path: String::new(),
+        },
+        "tar" => PreviewResult {
+            preview_type: "archive".to_string(),
+            text: archive::preview_tar(path, None),
+            image_path: String::new(),
+        },
+        "gz" | "tgz" => PreviewResult {
+            preview_type: "archive".to_string(),
+            text: archive::preview_tar(path, Some("gz")),
+            image_path: String::new(),
+        },
+        "bz2" => PreviewResult {
+            preview_type: "archive".to_string(),
+            text: archive::preview_tar(path, Some("bz2")),
+            image_path: String::new(),
+        },
+        "xz" => PreviewResult {
+            preview_type: "archive".to_string(),
+            text: archive::preview_tar(path, Some("xz")),
+            image_path: String::new(),
+        },
+        "7z" | "rar" | "zst" => PreviewResult {
+            preview_type: "archive".to_string(),
+            text: archive::preview_subprocess(path),
+            image_path: String::new(),
+        },
 
         // Binary types — show file info
-        "exe" | "dll" | "so" | "dylib" | "o" | "obj" | "a" | "bin" | "dat" | "db"
-        | "sqlite" | "sqlite3" | "class" | "pyc" | "pyo" | "whl" | "ttf" | "otf"
-        | "woff" | "woff2" => {
+        "exe" | "dll" | "so" | "dylib" | "o" | "obj" | "a" | "bin" | "dat" | "db" | "sqlite"
+        | "sqlite3" | "class" | "pyc" | "pyo" | "whl" | "ttf" | "otf" | "woff" | "woff2" => {
             PreviewResult {
                 preview_type: "binary".to_string(),
                 text: binary_info(path),
@@ -128,22 +113,18 @@ pub fn generate_preview(path: &str, is_dir: bool, content_width: u32) -> Preview
         }
 
         // Markdown
-        "md" | "markdown" => {
-            PreviewResult {
-                preview_type: "markdown".to_string(),
-                text: text::preview_markdown(path, content_width),
-                image_path: String::new(),
-            }
-        }
+        "md" | "markdown" => PreviewResult {
+            preview_type: "markdown".to_string(),
+            text: text::preview_markdown(path, content_width),
+            image_path: String::new(),
+        },
 
         // Default — try as text
-        _ => {
-            PreviewResult {
-                preview_type: "text".to_string(),
-                text: text::preview_text(path),
-                image_path: String::new(),
-            }
-        }
+        _ => PreviewResult {
+            preview_type: "text".to_string(),
+            text: text::preview_text(path),
+            image_path: String::new(),
+        },
     }
 }
 
@@ -164,14 +145,10 @@ fn image_info(path: &str) -> String {
 
 fn pdf_info(path: &str) -> String {
     // Use pdfinfo if available for page count
-    let output = std::process::Command::new("pdfinfo")
-        .arg(path)
-        .output();
+    let output = std::process::Command::new("pdfinfo").arg(path).output();
 
     match output {
-        Ok(out) if out.status.success() => {
-            String::from_utf8_lossy(&out.stdout).to_string()
-        }
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).to_string(),
         _ => {
             let meta = std::fs::metadata(path);
             let size = meta.map(|m| format_size(m.len())).unwrap_or_default();

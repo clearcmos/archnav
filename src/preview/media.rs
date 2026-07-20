@@ -17,8 +17,10 @@ pub fn preview_video(path: &str) -> String {
 fn ffprobe_info(path: &str) -> String {
     let output = Command::new("ffprobe")
         .args([
-            "-v", "quiet",
-            "-print_format", "json",
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
             "-show_format",
             "-show_streams",
             path,
@@ -85,7 +87,9 @@ fn format_ffprobe_json(json: &str, path: &str) -> String {
         // Tags (title, artist, album, etc.)
         if let Some(tags) = format.get("tags").and_then(|v| v.as_object()) {
             lines.push(String::new());
-            for key in ["title", "artist", "album", "genre", "date", "track", "comment"] {
+            for key in [
+                "title", "artist", "album", "genre", "date", "track", "comment",
+            ] {
                 // Try both lowercase and uppercase versions
                 let val = tags
                     .get(key)
@@ -123,24 +127,15 @@ fn format_ffprobe_json(json: &str, path: &str) -> String {
                         .get("sample_rate")
                         .and_then(|v| v.as_str())
                         .unwrap_or("?");
-                    let channels = stream
-                        .get("channels")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
+                    let channels = stream.get("channels").and_then(|v| v.as_u64()).unwrap_or(0);
                     lines.push(format!(
                         "  Audio: {} ({}Hz, {} ch)",
                         codec_name, sample_rate, channels
                     ));
                 }
                 "video" => {
-                    let width = stream
-                        .get("width")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let height = stream
-                        .get("height")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
+                    let width = stream.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let height = stream.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
                     let fps = stream
                         .get("r_frame_rate")
                         .and_then(|v| v.as_str())

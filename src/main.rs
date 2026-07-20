@@ -21,7 +21,9 @@ extern "C" {
 
 fn main() {
     // Install custom Qt message handler FIRST (before anything else)
-    unsafe { install_qt_debug_handler(); }
+    unsafe {
+        install_qt_debug_handler();
+    }
 
     // Initialize logging
     tracing_subscriber::fmt()
@@ -71,7 +73,8 @@ fn main() {
 
     // Handle --benchmark flag for search performance benchmarking
     if args.iter().any(|a| a == "--benchmark") {
-        let iterations: usize = args.iter()
+        let iterations: usize = args
+            .iter()
             .position(|a| a == "--iterations")
             .and_then(|i| args.get(i + 1))
             .and_then(|s| s.parse().ok())
@@ -113,12 +116,20 @@ fn main() {
 
         println!("╔══════════════════════════════════════════════════════════════════════╗");
         println!("║  archnav Search Benchmark                                           ║");
-        println!("║  Files indexed: {:>10}                                           ║", file_count);
-        println!("║  Iterations:    {:>10}                                           ║", iterations);
+        println!(
+            "║  Files indexed: {:>10}                                           ║",
+            file_count
+        );
+        println!(
+            "║  Iterations:    {:>10}                                           ║",
+            iterations
+        );
         println!("╚══════════════════════════════════════════════════════════════════════╝");
         println!();
-        println!("{:<25} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
-            "Query", "Min", "Median", "P95", "P99", "Max", "Results");
+        println!(
+            "{:<25} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+            "Query", "Min", "Median", "P95", "P99", "Max", "Results"
+        );
         println!("{}", "─".repeat(83));
 
         for query in &queries {
@@ -154,13 +165,22 @@ fn main() {
                 }
             }
 
-            println!("{:<25} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+            println!(
+                "{:<25} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
                 format!("\"{}\"", query),
-                fmt_dur(min), fmt_dur(median), fmt_dur(p95), fmt_dur(p99), fmt_dur(max),
-                result_count);
+                fmt_dur(min),
+                fmt_dur(median),
+                fmt_dur(p95),
+                fmt_dur(p99),
+                fmt_dur(max),
+                result_count
+            );
         }
 
-        println!("\n{} iterations per query, 3 warm-up runs excluded.", iterations);
+        println!(
+            "\n{} iterations per query, 3 warm-up runs excluded.",
+            iterations
+        );
         println!("Cache cleared between iterations for honest cold-search measurement.");
         std::process::exit(0);
     }
@@ -192,7 +212,9 @@ fn main() {
     }
 
     // Create Qt application (QApplication for QtWidgets support - needed for context menus)
-    unsafe { create_qapplication(); }
+    unsafe {
+        create_qapplication();
+    }
 
     // Load config for hotkey setting
     let cfg = config::AppConfig::load();
@@ -207,8 +229,8 @@ fn main() {
             let _ = toggle::send_toggle();
         },
         // Exit callback: quit the application
-        || {
-            unsafe { quit_qapplication(); }
+        || unsafe {
+            quit_qapplication();
         },
     );
 
@@ -232,7 +254,9 @@ fn main() {
     let exit_code = unsafe { run_qapplication() };
 
     // Cleanup
-    unsafe { destroy_qapplication(); }
+    unsafe {
+        destroy_qapplication();
+    }
     let _ = std::fs::remove_file(toggle::socket_path());
 
     std::process::exit(exit_code);

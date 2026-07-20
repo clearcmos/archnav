@@ -112,8 +112,13 @@ fn load_index(root: &Path) -> Result<Arc<HashMap<String, Vec<String>>>, String> 
 
     let data = std::fs::read(&index_path)
         .map_err(|e| format!("cannot read {}: {}", index_path.display(), e))?;
-    let doc: IndexDoc = serde_json::from_slice(&data)
-        .map_err(|e| format!("{} is not a valid tagdex index: {}", index_path.display(), e))?;
+    let doc: IndexDoc = serde_json::from_slice(&data).map_err(|e| {
+        format!(
+            "{} is not a valid tagdex index: {}",
+            index_path.display(),
+            e
+        )
+    })?;
     if doc.version > SUPPORTED_VERSION {
         return Err(format!(
             "tagdex index version {} is newer than archnav supports ({})",
@@ -125,7 +130,11 @@ fn load_index(root: &Path) -> Result<Arc<HashMap<String, Vec<String>>>, String> 
         Arc::new(doc.entries.into_iter().map(|(k, v)| (k, v.tags)).collect());
     cache().lock().unwrap().insert(
         root.to_path_buf(),
-        CachedIndex { mtime, size, entries: entries.clone() },
+        CachedIndex {
+            mtime,
+            size,
+            entries: entries.clone(),
+        },
     );
     Ok(entries)
 }
@@ -141,7 +150,9 @@ pub fn read_tags(file: &Path) -> Result<TagLookup, String> {
         .map_err(|_| format!("{} is not under {}", file.display(), root.display()))?
         .to_string_lossy()
         .into_owned();
-    Ok(TagLookup::Tags(entries.get(rel.as_str()).cloned().unwrap_or_default()))
+    Ok(TagLookup::Tags(
+        entries.get(rel.as_str()).cloned().unwrap_or_default(),
+    ))
 }
 
 /// Locate the tagdex binary. KDE autostart sessions may not have

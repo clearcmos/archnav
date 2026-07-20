@@ -36,7 +36,11 @@ pub fn start_watcher(
                 Err(e) => {
                     // Don't fail entirely for permission errors - some subdirs may be inaccessible
                     // The watcher will still work for accessible directories
-                    warn!("Partial watch failure for {} (continuing anyway): {:?}", path.display(), e);
+                    warn!(
+                        "Partial watch failure for {} (continuing anyway): {:?}",
+                        path.display(),
+                        e
+                    );
                 }
             }
         } else {

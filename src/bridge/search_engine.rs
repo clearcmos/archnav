@@ -160,7 +160,8 @@ impl qobject::SearchEngine {
     fn initialize(mut self: Pin<&mut Self>) {
         info!("Initializing search engine");
 
-        self.as_mut().set_status_text(QString::from("Loading index..."));
+        self.as_mut()
+            .set_status_text(QString::from("Loading index..."));
 
         // Start toggle socket server immediately (needs to work before engine loads)
         let qt_thread = self.qt_thread();
@@ -204,9 +205,8 @@ impl qobject::SearchEngine {
                 qobj.as_mut().set_total_indexed(file_count);
                 qobj.as_mut().set_bookmark_count(bookmark_count);
                 qobj.as_mut().set_engine_ready(true);
-                qobj.as_mut().set_status_text(QString::from(
-                    &format!("{} files indexed", file_count),
-                ));
+                qobj.as_mut()
+                    .set_status_text(QString::from(&format!("{} files indexed", file_count)));
             });
         });
     }
@@ -235,7 +235,10 @@ impl qobject::SearchEngine {
         let seq_counter = self.rust().search_seq.clone();
         let my_seq = seq_counter.fetch_add(1, Ordering::SeqCst) + 1;
 
-        debug!("[BRIDGE] search called: query='{}', seq={}", query_str, my_seq);
+        debug!(
+            "[BRIDGE] search called: query='{}', seq={}",
+            query_str, my_seq
+        );
 
         std::thread::spawn(move || {
             let (results, elapsed) = inner.search(&query_str, sort_index);
@@ -243,7 +246,10 @@ impl qobject::SearchEngine {
             let search_time = elapsed.as_millis() as i32;
             let total_indexed = inner.file_count() as i32;
 
-            debug!("[BRIDGE] search complete: query='{}', seq={}, results={}", query_str, my_seq, result_count);
+            debug!(
+                "[BRIDGE] search complete: query='{}', seq={}, results={}",
+                query_str, my_seq, result_count
+            );
 
             let query_str_clone = query_str.clone();
             let _ = qt_thread.queue(move |mut qobj| {
@@ -251,18 +257,25 @@ impl qobject::SearchEngine {
                 let current_seq = seq_counter.load(Ordering::SeqCst);
                 if my_seq < current_seq {
                     // A newer search was started, discard these stale results
-                    debug!("[BRIDGE] discarding stale: query='{}', seq={} < current={}", query_str_clone, my_seq, current_seq);
+                    debug!(
+                        "[BRIDGE] discarding stale: query='{}', seq={} < current={}",
+                        query_str_clone, my_seq, current_seq
+                    );
                     return;
                 }
 
-                debug!("[BRIDGE] updating UI: query='{}', seq={}, results={}", query_str_clone, my_seq, result_count);
+                debug!(
+                    "[BRIDGE] updating UI: query='{}', seq={}, results={}",
+                    query_str_clone, my_seq, result_count
+                );
                 qobj.as_mut().rust_mut().results = results;
                 qobj.as_mut().set_result_count(result_count);
                 qobj.as_mut().set_search_time_ms(search_time);
                 qobj.as_mut().set_total_indexed(total_indexed);
-                qobj.as_mut().set_status_text(QString::from(
-                    &format!("{} results in {}ms", result_count, search_time),
-                ));
+                qobj.as_mut().set_status_text(QString::from(&format!(
+                    "{} results in {}ms",
+                    result_count, search_time
+                )));
                 qobj.as_mut().resultsReady();
             });
         });
@@ -279,9 +292,8 @@ impl qobject::SearchEngine {
         let name = name.to_string();
         let path = path.to_string();
         let qt_thread = self.qt_thread();
-        self.as_mut().set_status_text(QString::from(
-            &format!("Indexing {}...", path),
-        ));
+        self.as_mut()
+            .set_status_text(QString::from(&format!("Indexing {}...", path)));
 
         std::thread::spawn(move || {
             inner.add_bookmark(&name, &path, is_network);
@@ -291,9 +303,8 @@ impl qobject::SearchEngine {
             let _ = qt_thread.queue(move |mut qobj| {
                 qobj.as_mut().set_bookmark_count(count);
                 qobj.as_mut().set_total_indexed(file_count);
-                qobj.as_mut().set_status_text(QString::from(
-                    &format!("{} files indexed", file_count),
-                ));
+                qobj.as_mut()
+                    .set_status_text(QString::from(&format!("{} files indexed", file_count)));
                 qobj.as_mut().bookmarksChanged();
             });
         });
@@ -345,9 +356,10 @@ impl qobject::SearchEngine {
 
             let _ = qt_thread.queue(move |mut qobj| {
                 qobj.as_mut().set_total_indexed(file_count);
-                qobj.as_mut().set_status_text(QString::from(
-                    &format!("Rescan complete: {} files", file_count),
-                ));
+                qobj.as_mut().set_status_text(QString::from(&format!(
+                    "Rescan complete: {} files",
+                    file_count
+                )));
                 qobj.as_mut().rescanComplete();
             });
         });
@@ -423,10 +435,7 @@ impl qobject::SearchEngine {
             .get(row as usize)
             .map(|r| {
                 let path = std::path::Path::new(&r.path);
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&r.path);
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&r.path);
                 QString::from(name)
             })
             .unwrap_or_default()
