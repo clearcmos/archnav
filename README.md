@@ -11,7 +11,7 @@ Fast, keyboard-centric file navigator for KDE Wayland with instant trigram-index
 - **Unified search** - Search all bookmarks simultaneously
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
-- **File tags** - reads tagdex tag stores: tags column in results, Ctrl+T tag editor, `t:` search filter (`t: coffee outdoor` = OR, `t: coffee&outdoor` = AND)
+- **File tags** - built-in tag system that works where xattrs do not (NAS/CIFS mounts): tags column in results, Ctrl+T tag editor, `t:` search filter, and a full `archnav tag` CLI with rename-surviving repair
 - **Real-time updates** - inotify watches for instant file change detection
 - **Keyboard-centric** - Arrow keys navigate, Enter opens, Esc closes
 - **System tray** - Persists in tray when closed, toggle with click or global hotkey
@@ -85,6 +85,36 @@ This installs `archnav` to `/usr/bin/`, registers the desktop file, and ships th
 - **Fuzzy**: `~confg` - fuzzy match with typo tolerance (prefix with `~`)
 - **Path-aware**: `src/config` - match "config" under a "src" directory
 - **Folders only**: `folder:movies` or `folder: movies` - restrict results to directories (substring match)
+- **Tags**: `t:coffee` or `t: coffee outdoor` (OR) or `t: coffee&outdoor` / `t:coffee AND outdoor` (AND); bare `t:` lists every tagged file. Search text goes before a detached `t:` group.
+
+### File Tags
+
+archnav includes a tag system for organizing files into overlapping
+categories, designed for filesystems where `user.xdg.tags` xattrs fail
+(CIFS/SMB NAS mounts). Tags live in one portable JSON index per directory
+tree (`.tagstore/index.json`); content fingerprints let `repair` relink
+files that were renamed or moved outside the tool. The format is specified
+in [docs/tagstore-format.md](docs/tagstore-format.md).
+
+In the GUI: a Tags column in results, the tags of the selected file in the
+status bar, Ctrl+T to edit, and the `t:` search filter above.
+
+From the terminal:
+
+```
+archnav tag init /mnt/nas/photos          # once per tree
+archnav tag add "beach day.jpg" vacation 2026
+archnav tag add -t vacation pic1.jpg pic2.jpg pic3.jpg
+archnav tag ls                            # ls -lh style listing with a tags column
+archnav tag find vacation --not 2025      # query by tags
+archnav tag mv old.jpg archive/new.jpg    # move + reindex in one step
+archnav tag repair                        # relink after external renames/moves
+archnav tag check --verify                # read-only fsck of the index
+```
+
+On filesystems that do support user xattrs, tags are additionally mirrored
+to `user.xdg.tags` so KDE Dolphin and Baloo see them; the index remains the
+source of truth.
 
 ### System Tray
 

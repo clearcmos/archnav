@@ -126,8 +126,9 @@ impl qobject::TagBridge {
     }
 
     /// Replace the file's tags from the dialog's comma-separated input.
-    /// Runs the tagdex CLI in a background thread; emits tagsSaved on
-    /// success, sets error_text on failure.
+    /// Writes through the native tag store engine in a background thread
+    /// (the index may live on a network mount); emits tagsSaved on success,
+    /// sets error_text on failure.
     fn save_tags(mut self: Pin<&mut Self>, path: QString, input: QString) {
         let path_str = path.to_string();
         let tags = tagstore::parse_tag_input(&input.to_string());
@@ -137,13 +138,14 @@ impl qobject::TagBridge {
 
         let qt_thread = self.qt_thread();
         std::thread::spawn(move || {
-            let result = tagstore::write_tags(std::path::Path::new(&path_str), &tags);
+            let result = tagstore::set_tags_for_file(std::path::Path::new(&path_str), &tags);
             let _ = qt_thread.queue(move |mut qobj| {
                 qobj.as_mut().set_is_saving(false);
                 match result {
-                    Ok(()) => {
+                    Ok(final_tags) => {
                         qobj.as_mut().set_has_store(true);
-                        qobj.as_mut().set_tags(QString::from(&*tags.join(", ")));
+                        qobj.as_mut()
+                            .set_tags(QString::from(&*final_tags.join(", ")));
                         qobj.as_mut().tagsSaved();
                     }
                     Err(err) => {

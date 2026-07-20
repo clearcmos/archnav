@@ -75,7 +75,7 @@ Dialog {
 
         Label {
             visible: tagBridge && !tagBridge.has_store && tagBridge.error_text.toString() === ""
-            text: "No tag store found above this file. Run: tagdex init <tree root>"
+            text: "No tag store found above this file. Run: archnav tag init <tree root>"
             color: Style.statusOrange
             font.pixelSize: Style.fontSizeSmall
             wrapMode: Text.Wrap

@@ -6,6 +6,7 @@ pub mod ipc;
 pub mod preview;
 pub mod search;
 pub mod system_tray;
+pub mod tagcli;
 pub mod tagstore;
 pub mod toggle;
 
@@ -20,7 +21,15 @@ extern "C" {
 }
 
 fn main() {
-    // Install custom Qt message handler FIRST (before anything else)
+    // Handle the tag CLI before anything else (Qt handler included, which
+    // prints on install): `archnav tag ...` is headless, never touches Qt
+    // or the single-instance socket, and owns its own output.
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("tag") {
+        std::process::exit(tagcli::run(&args[2..]));
+    }
+
+    // Install custom Qt message handler FIRST (before any Qt use)
     unsafe {
         install_qt_debug_handler();
     }
@@ -44,7 +53,6 @@ fn main() {
     }
 
     // Handle --test-search flag for CLI testing
-    let args: Vec<String> = std::env::args().collect();
     if let Some(pos) = args.iter().position(|a| a == "--test-search") {
         let queries: Vec<&str> = args.iter().skip(pos + 1).map(|s| s.as_str()).collect();
         if queries.is_empty() {

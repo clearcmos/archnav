@@ -1,0 +1,23 @@
+{
+  "entries": {
+    "Top Picks/café menu.pdf": {
+      "fp": "c374106b0e1eef9844fc247e5a222d47",
+      "mtime_ns": 1784520622186633212,
+      "size": 12,
+      "tags": [
+        "client:acme corp",
+        "menu",
+        "restaurant"
+      ]
+    },
+    "plain.txt": {
+      "fp": "689e4ac654a9cdeb21234bafeaf5e1b1",
+      "mtime_ns": 1784520622186643219,
+      "size": 13,
+      "tags": [
+        "misc"
+      ]
+    }
+  },
+  "version": 1
+}

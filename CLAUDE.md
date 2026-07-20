@@ -16,7 +16,7 @@ src/
 ├── bridge/              # Qt/QML bridge objects (cxx-qt)
 │   ├── search_engine.rs # SearchEngine QObject - search, bookmarks, results, context menu
 │   ├── preview_bridge.rs # PreviewBridge QObject - file preview generation
-│   └── tag_bridge.rs    # TagBridge QObject - tagdex tag lookup and editing
+│   └── tag_bridge.rs    # TagBridge QObject - tag lookup and editing
 ├── search/              # Core search engine
 │   ├── engine.rs        # CoreEngine - owns index, database, background threads
 │   ├── trigram.rs       # TrigramIndex - in-memory trigram posting lists
@@ -30,7 +30,13 @@ src/
 │   ├── media.rs         # Audio/video metadata via ffprobe
 │   ├── archive.rs       # ZIP/TAR contents listing
 │   └── directory.rs     # Directory listing
-├── tagstore.rs          # Read-only tagdex index parser + tagdex CLI writer (see Tagging)
+├── tagstore/            # Native tag store engine (see Tagging + docs/tagstore-format.md)
+│   ├── mod.rs           # Store ops, read caches, GUI entry points
+│   ├── fingerprint.rs   # blake2b-128 head/tail fingerprints (parity-pinned)
+│   ├── index.rs         # index.json schema, atomic load/save
+│   ├── lock.rs          # mkdir-based store lock (RAII)
+│   └── xattrs.rs        # user.xdg.tags mirror (libc)
+├── tagcli.rs            # `archnav tag` CLI subcommands (headless, pre-Qt)
 ├── config.rs            # JSON config load/save (~/.config/archnav/config.json)
 ├── ipc.rs               # Unix socket IPC server for toggle command
 ├── toggle.rs            # Toggle client (--toggle flag)
@@ -134,17 +140,18 @@ The search engine uses **trigram indexing** for instant substring matching:
 ## Engineering Standard (tier 2: public repo)
 
 - **Tests**: every pure-logic module carries an in-module `#[cfg(test)]` block. Runtime-bound modules are exempt from direct tests and excluded from the coverage gate: `bridge/*` (Qt objects need a running QML engine), `main.rs` (entry point), `ipc.rs` and `toggle.rs` (live unix socket + engine), `search/watcher.rs` (inotify threads), `search/integrity.rs` (periodic threads), `context_menu`/`system_tray`/`file_opener`/`qt_*` (C++/FFI glue). `preview/media.rs` splits parse-vs-run: JSON formatting is tested against captured ffprobe output; the subprocess paths are exempt.
-- **Coverage**: cargo-llvm-cov, gated in CI over the non-exempt set (`--ignore-filename-regex` in ci.yml mirrors the exemption list above). Gate: 60% lines (measured 66% at introduction, 2026-07-19). Ratchets upward, never down. Biggest headroom: `search/engine.rs` (17%, thread/db orchestration) and `search/scanner.rs` (37%).
+- **Coverage**: cargo-llvm-cov, gated in CI over the non-exempt set (`--ignore-filename-regex` in ci.yml mirrors the exemption list above). Gate: 70% lines (introduced at 60 with 66% measured, 2026-07-19; raised to 70 with 74% measured after the native tag engine landed, 2026-07-20). Ratchets upward, never down. Biggest headroom: `search/engine.rs` (thread/db orchestration) and `search/scanner.rs`.
 - **Supply chain**: Cargo.lock committed; cargo dependency updates are deliberate and manual, advisory-driven (see the chore(deps) commit trail). dependabot only maintains the pinned GitHub Actions SHAs.
 - **Changelog**: none; git history is the record.
 - **License**: MIT (LICENSE file; matches Cargo.toml).
 
-## Tagging (tagdex integration)
+## Tagging
 
-archnav surfaces file tags from [tagdex](https://github.com/clearcmos/tagdex) stores (a `.tagstore/index.json` at a tree root, designed for filesystems without xattr support such as CIFS NAS mounts).
+archnav owns a complete native tag system (format spec: docs/tagstore-format.md; a `.tagstore/index.json` at a tree root, designed for filesystems without xattr support such as CIFS NAS mounts). It absorbed the standalone Python `tagdex` tool so the public repo is self-sufficient; fingerprint and index-format parity with stores written by that implementation is pinned by fixture tests in `src/tagstore/`.
 
-- **Single-writer principle**: archnav parses `.tagstore/index.json` directly for display (`src/tagstore.rs`, cached by index mtime+size plus a 5s-TTL store-root discovery cache keyed by directory), but every mutation shells out to the `tagdex` CLI so the store lock, atomic index writes, content fingerprints, and xattr mirroring stay in one implementation. Never write the index JSON from archnav.
-- **UI**: Tags column in results (rightmost), tags of the selected file in the status bar, Ctrl+T edit dialog (comma-separated, empty clears). The tagdex binary is resolved at `~/.local/bin/tagdex` first (KDE autostart PATH lacks it), `TAGDEX_BIN` overrides.
+- **Single writer**: `src/tagstore/` is the only code that writes the index - the GUI (TagBridge), the `archnav tag` CLI, and the `t:` search all go through it. The write path: mkdir lock, atomic same-dir tmp+rename, content fingerprints, best-effort `user.xdg.tags` mirror. Never bypass it.
+- **Layout**: `tagstore/mod.rs` (Store ops + read caches: index mtime+size keyed tag map, 5s-TTL store-root discovery cache keyed by directory), `fingerprint.rs` (blake2b-128, head/tail - parity-critical, see the pinned digests), `index.rs` (BTreeMap, deterministic JSON), `lock.rs` (RAII mkdir lock), `xattrs.rs` (libc). `tagcli.rs` is the terminal front end (`archnav tag ...`, dispatched in main.rs before Qt initializes).
+- **UI**: Tags column in results (rightmost), tags of the selected file in the status bar, Ctrl+T edit dialog (comma-separated, empty clears).
 - **`t:` search filter**: `t: a b` = a OR b; `&` or uppercase `AND` join (`t: a&b`, `t:a AND b`); uppercase `OR` is an explicit separator; lowercase `and` stays a tag name; `t:` alone = any tagged file; text must precede a detached `t:` group. Matching is case-insensitive substring.
 - **Engine path**: tag queries invert the search - candidates come from the tag stores (roots discovered via the `.tagstore` path component in the trigram index), so a `t:`-only query costs O(tagged files), not a 600k-file scan. Tag queries bypass the incremental search cache entirely: cache refinement filters with `matches_path()`, which is tag-blind, and would serve wrong results for refined tag queries.
 

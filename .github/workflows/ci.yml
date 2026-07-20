@@ -30,7 +30,7 @@ jobs:
       # Runs the test suite under coverage instrumentation. The ignore regex
       # mirrors the runtime-bound exemptions documented in CLAUDE.md
       # (Engineering Standard); the threshold only ratchets upward.
-      - run: LLVM_COV=/usr/bin/llvm-cov LLVM_PROFDATA=/usr/bin/llvm-profdata cargo llvm-cov --summary-only --fail-under-lines 60 --ignore-filename-regex '(bridge/|main\.rs|ipc\.rs|toggle\.rs|context_menu\.rs|system_tray\.rs|file_opener\.rs|watcher\.rs|integrity\.rs)'
+      - run: LLVM_COV=/usr/bin/llvm-cov LLVM_PROFDATA=/usr/bin/llvm-profdata cargo llvm-cov --summary-only --fail-under-lines 70 --ignore-filename-regex '(bridge/|main\.rs|ipc\.rs|toggle\.rs|context_menu\.rs|system_tray\.rs|file_opener\.rs|watcher\.rs|integrity\.rs)'
 
   # Aggregate gate so branch protection can target a single check.
   ci-ok:
