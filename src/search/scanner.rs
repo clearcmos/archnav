@@ -22,14 +22,14 @@ pub fn set_exclude_paths(paths: Vec<String>) {
 
 /// Whether the user configured any exclude paths.
 pub fn has_user_excludes() -> bool {
-    USER_EXCLUDE_PATHS.get().map_or(false, |v| !v.is_empty())
+    USER_EXCLUDE_PATHS.get().is_some_and(|v| !v.is_empty())
 }
 
 /// True if `path` equals, or is nested recursively under, any exclude path.
 pub fn is_user_excluded(path: &str) -> bool {
     USER_EXCLUDE_PATHS
         .get()
-        .map_or(false, |excludes| path_under_any(path, excludes))
+        .is_some_and(|excludes| path_under_any(path, excludes))
 }
 
 /// Pure matcher: is `path` one of `excludes`, or beneath one?

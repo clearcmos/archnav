@@ -405,9 +405,8 @@ impl ParsedQuery {
         }
 
         // Determine query mode
-        let mode = if text.starts_with('/') {
+        let mode = if let Some(pattern) = text.strip_prefix('/') {
             // Regex mode
-            let pattern = &text[1..];
             match Regex::new(&format!("(?i){}", pattern)) {
                 Ok(re) => QueryMode::Regex(re),
                 Err(_) => QueryMode::Substring(text),

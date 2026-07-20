@@ -82,14 +82,14 @@ fn handle_client(stream: std::os::unix::net::UnixStream, engine: &CoreEngine) {
 }
 
 fn process_command(line: &str, engine: &CoreEngine) -> String {
-    if line.starts_with("SEARCH_ALL ") {
-        handle_search_all(&line[11..], engine)
-    } else if line.starts_with("SEARCH ") {
-        handle_search(&line[7..], engine)
-    } else if line.starts_with("ADD_BOOKMARK ") {
-        handle_add_bookmark(&line[13..], engine)
-    } else if line.starts_with("RESCAN ") {
-        handle_rescan(&line[7..], engine)
+    if let Some(rest) = line.strip_prefix("SEARCH_ALL ") {
+        handle_search_all(rest, engine)
+    } else if let Some(rest) = line.strip_prefix("SEARCH ") {
+        handle_search(rest, engine)
+    } else if let Some(rest) = line.strip_prefix("ADD_BOOKMARK ") {
+        handle_add_bookmark(rest, engine)
+    } else if let Some(rest) = line.strip_prefix("RESCAN ") {
+        handle_rescan(rest, engine)
     } else if line == "STATS" {
         handle_stats(engine)
     } else if line == "PING" {

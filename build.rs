@@ -108,21 +108,21 @@ fn main() {
             {
                 let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path.is_empty() {
-                    cc.flag(&format!("-isystem{}", path));
-                    cc.flag(&format!("-isystem{}/QtQmlIntegration", path));
+                    cc.flag(format!("-isystem{}", path));
+                    cc.flag(format!("-isystem{}/QtQmlIntegration", path));
                 }
             }
 
             // KDE Frameworks 6 include paths (standard system locations on Arch)
             let kf6_include = "/usr/include/KF6";
-            cc.flag(&format!("-isystem{}", kf6_include));
+            cc.flag(format!("-isystem{}", kf6_include));
             for subdir in [
                 "KService", "KIOCore", "KIOGui", "KIO",
                 "KCoreAddons", "KConfig", "KConfigCore",
             ] {
                 let path = format!("{}/{}", kf6_include, subdir);
                 if std::path::Path::new(&path).is_dir() {
-                    cc.flag(&format!("-isystem{}", path));
+                    cc.flag(format!("-isystem{}", path));
                 }
             }
 

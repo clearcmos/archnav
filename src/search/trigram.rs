@@ -111,6 +111,12 @@ pub struct TrigramIndex {
     pub max_results: usize,
 }
 
+impl Default for TrigramIndex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TrigramIndex {
     pub fn new() -> Self {
         Self {
@@ -519,14 +525,11 @@ impl TrigramIndex {
 
                 // Extension filter
                 if let Some(ref ext_filter) = query.extension_filter {
-                    if let Some(ext) =
-                        Path::new(&entry.path).extension().and_then(|e| e.to_str())
                     {
+                        let ext = Path::new(&entry.path).extension().and_then(|e| e.to_str())?;
                         if ext.to_lowercase() != ext_filter.to_lowercase() {
                             return None;
                         }
-                    } else {
-                        return None;
                     }
                 }
 
@@ -655,26 +658,26 @@ impl TrigramIndex {
 
 /// Sort SearchResult by the given order
 fn sort_results(
-    results: &mut Vec<SearchResult>,
+    results: &mut [SearchResult],
     order: SortOrder,
     path_to_id: &HashMap<String, u32>,
     access_data: &HashMap<u32, AccessInfo>,
 ) {
     match order {
-        SortOrder::MtimeDesc => results.sort_by(|a, b| b.mtime.cmp(&a.mtime)),
-        SortOrder::MtimeAsc => results.sort_by(|a, b| a.mtime.cmp(&b.mtime)),
+        SortOrder::MtimeDesc => results.sort_by_key(|r| std::cmp::Reverse(r.mtime)),
+        SortOrder::MtimeAsc => results.sort_by_key(|a| a.mtime),
         SortOrder::NameAsc => results.sort_by(|a, b| {
             let na = Path::new(&a.path).file_name().unwrap_or_default();
             let nb = Path::new(&b.path).file_name().unwrap_or_default();
-            na.cmp(&nb)
+            na.cmp(nb)
         }),
         SortOrder::NameDesc => results.sort_by(|a, b| {
             let na = Path::new(&a.path).file_name().unwrap_or_default();
             let nb = Path::new(&b.path).file_name().unwrap_or_default();
-            nb.cmp(&na)
+            nb.cmp(na)
         }),
-        SortOrder::SizeDesc => results.sort_by(|a, b| b.size.cmp(&a.size)),
-        SortOrder::SizeAsc => results.sort_by(|a, b| a.size.cmp(&b.size)),
+        SortOrder::SizeDesc => results.sort_by_key(|r| std::cmp::Reverse(r.size)),
+        SortOrder::SizeAsc => results.sort_by_key(|a| a.size),
         SortOrder::PathAsc => results.sort_by(|a, b| a.path.cmp(&b.path)),
         SortOrder::Frecency => results.sort_by(|a, b| {
             let score_a = path_to_id
@@ -694,26 +697,26 @@ fn sort_results(
 
 /// Sort SearchAllResult by the given order
 fn sort_all_results(
-    results: &mut Vec<SearchAllResult>,
+    results: &mut [SearchAllResult],
     order: SortOrder,
     path_to_id: &HashMap<String, u32>,
     access_data: &HashMap<u32, AccessInfo>,
 ) {
     match order {
-        SortOrder::MtimeDesc => results.sort_by(|a, b| b.mtime.cmp(&a.mtime)),
-        SortOrder::MtimeAsc => results.sort_by(|a, b| a.mtime.cmp(&b.mtime)),
+        SortOrder::MtimeDesc => results.sort_by_key(|r| std::cmp::Reverse(r.mtime)),
+        SortOrder::MtimeAsc => results.sort_by_key(|a| a.mtime),
         SortOrder::NameAsc => results.sort_by(|a, b| {
             let na = Path::new(&a.path).file_name().unwrap_or_default();
             let nb = Path::new(&b.path).file_name().unwrap_or_default();
-            na.cmp(&nb)
+            na.cmp(nb)
         }),
         SortOrder::NameDesc => results.sort_by(|a, b| {
             let na = Path::new(&a.path).file_name().unwrap_or_default();
             let nb = Path::new(&b.path).file_name().unwrap_or_default();
-            nb.cmp(&na)
+            nb.cmp(na)
         }),
-        SortOrder::SizeDesc => results.sort_by(|a, b| b.size.cmp(&a.size)),
-        SortOrder::SizeAsc => results.sort_by(|a, b| a.size.cmp(&b.size)),
+        SortOrder::SizeDesc => results.sort_by_key(|r| std::cmp::Reverse(r.size)),
+        SortOrder::SizeAsc => results.sort_by_key(|a| a.size),
         SortOrder::PathAsc => results.sort_by(|a, b| a.path.cmp(&b.path)),
         SortOrder::Frecency => results.sort_by(|a, b| {
             let score_a = path_to_id
