@@ -1,0 +1,9 @@
+# Cargo dependencies are deliberately NOT covered: updates are manual and
+# advisory-driven (see the chore(deps) commits and CLAUDE.md). This file
+# only keeps the pinned GitHub Actions SHAs current.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

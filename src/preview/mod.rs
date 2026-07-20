@@ -192,3 +192,70 @@ pub fn format_size(bytes: u64) -> String {
         format!("{:.1} GiB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_size_units() {
+        assert_eq!(format_size(0), "0 B");
+        assert_eq!(format_size(1023), "1023 B");
+        assert_eq!(format_size(1024), "1.0 KiB");
+        assert_eq!(format_size(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(format_size(3 * 1024 * 1024 * 1024), "3.0 GiB");
+    }
+
+    // Dispatch tests cover the extension routing; media and pdf types are
+    // exercised elsewhere (parse tests) because they shell out to
+    // ffprobe/pdfinfo, which CI does not install.
+
+    #[test]
+    fn dispatches_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let r = generate_preview(tmp.path().to_str().unwrap(), true, 400);
+        assert_eq!(r.preview_type, "directory");
+        assert!(r.text.contains("0 items"));
+    }
+
+    #[test]
+    fn dispatches_image_with_path_for_qml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("pic.png");
+        std::fs::write(&p, b"fake").unwrap();
+        let r = generate_preview(p.to_str().unwrap(), false, 400);
+        assert_eq!(r.preview_type, "image");
+        assert_eq!(r.image_path, p.to_str().unwrap());
+        assert!(r.text.contains("pic.png"));
+    }
+
+    #[test]
+    fn dispatches_binary_info() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("lib.so");
+        std::fs::write(&p, b"\x7fELF").unwrap();
+        let r = generate_preview(p.to_str().unwrap(), false, 400);
+        assert_eq!(r.preview_type, "binary");
+        assert!(r.text.contains("Binary File"));
+        assert!(r.text.contains("Type: so"));
+    }
+
+    #[test]
+    fn dispatches_unknown_extension_as_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("notes.conf");
+        std::fs::write(&p, b"key=value\n").unwrap();
+        let r = generate_preview(p.to_str().unwrap(), false, 400);
+        assert_eq!(r.preview_type, "text");
+        assert!(r.text.contains("key=value"));
+    }
+
+    #[test]
+    fn dispatches_zip_as_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("a.zip");
+        std::fs::write(&p, b"not really").unwrap();
+        let r = generate_preview(p.to_str().unwrap(), false, 400);
+        assert_eq!(r.preview_type, "archive");
+    }
+}

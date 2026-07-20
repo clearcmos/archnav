@@ -205,3 +205,57 @@ fn extract_album_art(path: &str) -> String {
         _ => String::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Parse-vs-run split: the ffprobe invocation is environment-bound, but
+    // the JSON formatting is pure and tested against captured real output.
+    const FFPROBE_JSON: &str = r#"{
+        "format": {
+            "filename": "/music/Artist/song.flac",
+            "format_long_name": "raw FLAC",
+            "duration": "125.500000",
+            "size": "34567890",
+            "bit_rate": "1058400",
+            "tags": {"title": "Test Song", "ARTIST": "Test Artist"}
+        },
+        "streams": [
+            {"codec_type": "audio", "codec_name": "flac", "sample_rate": "44100", "channels": 2},
+            {"codec_type": "video", "codec_name": "mjpeg", "width": 500, "height": 500, "r_frame_rate": "25/1"},
+            {"codec_type": "subtitle", "codec_name": "srt", "tags": {"language": "eng"}}
+        ]
+    }"#;
+
+    #[test]
+    fn formats_captured_ffprobe_output() {
+        let out = format_ffprobe_json(FFPROBE_JSON, "/music/Artist/song.flac");
+        assert!(out.contains("File: song.flac"));
+        assert!(out.contains("Format: raw FLAC"));
+        assert!(out.contains("Duration: 2:05")); // 125.5s
+        assert!(out.contains("Size: 33.0 MiB"));
+        assert!(out.contains("Bitrate: 1058 kbps"));
+        assert!(out.contains("Title: Test Song"));
+        assert!(out.contains("Artist: Test Artist")); // uppercase tag key matched
+        assert!(out.contains("Audio: flac (44100Hz, 2 ch)"));
+        assert!(out.contains("Video: mjpeg (500x500, 25/1)"));
+        assert!(out.contains("Subtitle: srt (eng)"));
+    }
+
+    #[test]
+    fn invalid_json_falls_back_to_path_line() {
+        assert_eq!(
+            format_ffprobe_json("{nope", "/x/y.mp3"),
+            "Media file: /x/y.mp3"
+        );
+    }
+
+    #[test]
+    fn empty_document_falls_back_to_path_line() {
+        assert_eq!(
+            format_ffprobe_json("{}", "/x/y.mp3"),
+            "Media file: /x/y.mp3"
+        );
+    }
+}

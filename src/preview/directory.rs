@@ -49,3 +49,38 @@ pub fn preview_directory(path: &str) -> String {
         Err(e) => format!("Unable to read directory: {}", e),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lists_dirs_first_with_sizes_and_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("zsub")).unwrap();
+        std::fs::write(tmp.path().join("afile.txt"), b"12345").unwrap();
+        let out = preview_directory(tmp.path().to_str().unwrap());
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], "2 items");
+        // Directories come first even when files sort earlier alphabetically
+        assert!(lines[2].contains("[dir]  zsub/"), "got: {}", lines[2]);
+        assert!(lines[3].contains("5 B") && lines[3].contains("afile.txt"));
+    }
+
+    #[test]
+    fn truncates_past_max_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..(MAX_ENTRIES + 5) {
+            std::fs::write(tmp.path().join(format!("f{:03}.txt", i)), b"x").unwrap();
+        }
+        let out = preview_directory(tmp.path().to_str().unwrap());
+        assert!(out.contains(&format!("{} items", MAX_ENTRIES + 5)));
+        assert!(out.contains("... and 5 more items"));
+    }
+
+    #[test]
+    fn unreadable_directory_reports_error() {
+        let out = preview_directory("/nonexistent/archnav-test-dir");
+        assert!(out.starts_with("Unable to read directory:"));
+    }
+}

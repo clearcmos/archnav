@@ -189,3 +189,93 @@ pub fn preview_subprocess(path: &str) -> String {
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn zip_fixture(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("fixture.zip");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut w = zip::ZipWriter::new(file);
+        let opts: zip::write::FileOptions = Default::default();
+        w.add_directory("sub/", opts).unwrap();
+        w.start_file("hello.txt", opts).unwrap();
+        w.write_all(b"hello world").unwrap();
+        w.finish().unwrap();
+        path
+    }
+
+    fn tar_bytes() -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        let data = b"tar content";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        b.append_data(&mut header, "inner/file.txt", data.as_slice())
+            .unwrap();
+        b.into_inner().unwrap()
+    }
+
+    #[test]
+    fn zip_preview_lists_entries_and_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = zip_fixture(tmp.path());
+        let out = preview_zip(path.to_str().unwrap());
+        assert!(out.contains("ZIP Archive: 2 entries"));
+        assert!(out.contains("[dir]     sub/"));
+        assert!(out.contains("11 B") && out.contains("hello.txt"));
+    }
+
+    #[test]
+    fn zip_preview_reports_open_and_format_errors() {
+        assert!(preview_zip("/nonexistent/a.zip").starts_with("Unable to open archive:"));
+        let tmp = tempfile::tempdir().unwrap();
+        let bad = tmp.path().join("bad.zip");
+        std::fs::write(&bad, b"not a zip").unwrap();
+        assert!(preview_zip(bad.to_str().unwrap()).starts_with("Unable to read ZIP archive:"));
+    }
+
+    #[test]
+    fn tar_preview_lists_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("fixture.tar");
+        std::fs::write(&path, tar_bytes()).unwrap();
+        let out = preview_tar(path.to_str().unwrap(), None);
+        assert!(out.starts_with("TAR Archive:"));
+        assert!(out.contains("11 B") && out.contains("inner/file.txt"));
+    }
+
+    #[test]
+    fn tar_gz_preview_decompresses() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("fixture.tar.gz");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        enc.write_all(&tar_bytes()).unwrap();
+        enc.finish().unwrap();
+        let out = preview_tar(path.to_str().unwrap(), Some("gz"));
+        assert!(out.starts_with("TAR.GZ Archive:"));
+        assert!(out.contains("inner/file.txt"));
+    }
+
+    #[test]
+    fn empty_tar_is_labeled_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("empty.tar");
+        let b = tar::Builder::new(Vec::new());
+        std::fs::write(&path, b.into_inner().unwrap()).unwrap();
+        let out = preview_tar(path.to_str().unwrap(), None);
+        assert!(out.contains("(empty archive)"));
+    }
+
+    #[test]
+    fn unsupported_subprocess_extension_is_reported() {
+        assert_eq!(
+            preview_subprocess("/tmp/whatever.foo"),
+            "Unsupported archive format: .foo"
+        );
+    }
+}

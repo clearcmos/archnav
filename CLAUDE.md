@@ -80,10 +80,14 @@ cargo build --release
 # Run with debug logging
 RUST_LOG=archnav=debug cargo run
 
-# Test / lint / format (all three are enforced by CI on push and PR)
+# Test / lint / format (all enforced by CI on push and PR)
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo fmt
+
+# Coverage (gated in CI; env vars point cargo-llvm-cov at the system LLVM,
+# needed because rust is installed via pacman rather than rustup)
+LLVM_COV=/usr/bin/llvm-cov LLVM_PROFDATA=/usr/bin/llvm-profdata cargo llvm-cov --summary-only
 ```
 
 ## Dependencies
@@ -126,6 +130,14 @@ The search engine uses **trigram indexing** for instant substring matching:
 - **Posting list cache**: Pre-built posting lists stored in SQLite for instant startup
 - **Async watcher setup**: Engine reports "ready" immediately after index load; inotify watches are set up in background thread
 - **Count-based cache validation**: Compares cached file count vs actual to detect staleness
+
+## Engineering Standard (tier 2: public repo)
+
+- **Tests**: every pure-logic module carries an in-module `#[cfg(test)]` block. Runtime-bound modules are exempt from direct tests and excluded from the coverage gate: `bridge/*` (Qt objects need a running QML engine), `main.rs` (entry point), `ipc.rs` and `toggle.rs` (live unix socket + engine), `search/watcher.rs` (inotify threads), `search/integrity.rs` (periodic threads), `context_menu`/`system_tray`/`file_opener`/`qt_*` (C++/FFI glue). `preview/media.rs` splits parse-vs-run: JSON formatting is tested against captured ffprobe output; the subprocess paths are exempt.
+- **Coverage**: cargo-llvm-cov, gated in CI over the non-exempt set (`--ignore-filename-regex` in ci.yml mirrors the exemption list above). Gate: 60% lines (measured 66% at introduction, 2026-07-19). Ratchets upward, never down. Biggest headroom: `search/engine.rs` (17%, thread/db orchestration) and `search/scanner.rs` (37%).
+- **Supply chain**: Cargo.lock committed; cargo dependency updates are deliberate and manual, advisory-driven (see the chore(deps) commit trail). dependabot only maintains the pinned GitHub Actions SHAs.
+- **Changelog**: none; git history is the record.
+- **License**: MIT (LICENSE file; matches Cargo.toml).
 
 ## Tagging (tagdex integration)
 

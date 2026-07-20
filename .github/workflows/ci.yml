@@ -6,16 +6,36 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  ci:
+  checks:
     runs-on: ubuntu-latest
     # Arch container: this is an Arch-targeted app (PKGBUILD installs it) and
     # the Qt6 + KDE Frameworks 6 build deps match the target system exactly.
     container: archlinux:latest
     timeout-minutes: 30
     steps:
-      - run: pacman -Syu --noconfirm base-devel rust qt6-base qt6-declarative kio kservice kcoreaddons pkgconf git
-      - uses: actions/checkout@v4
+      - run: pacman -Syu --noconfirm base-devel rust cargo-llvm-cov llvm qt6-base qt6-declarative kio kservice kcoreaddons pkgconf git
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      # Runs the test suite under coverage instrumentation. The ignore regex
+      # mirrors the runtime-bound exemptions documented in CLAUDE.md
+      # (Engineering Standard); the threshold only ratchets upward.
+      - run: LLVM_COV=/usr/bin/llvm-cov LLVM_PROFDATA=/usr/bin/llvm-profdata cargo llvm-cov --summary-only --fail-under-lines 60 --ignore-filename-regex '(bridge/|main\.rs|ipc\.rs|toggle\.rs|context_menu\.rs|system_tray\.rs|file_opener\.rs|watcher\.rs|integrity\.rs)'
+
+  # Aggregate gate so branch protection can target a single check.
+  ci-ok:
+    needs: [checks]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo ok
