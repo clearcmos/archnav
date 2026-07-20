@@ -11,6 +11,7 @@ Fast, keyboard-centric file navigator for KDE Wayland with instant trigram-index
 - **Unified search** - Search all bookmarks simultaneously
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
+- **File tags** - reads tagdex tag stores: tags column in results, Ctrl+T tag editor, `t:` search filter (`t: coffee outdoor` = OR, `t: coffee&outdoor` = AND)
 - **Real-time updates** - inotify watches for instant file change detection
 - **Keyboard-centric** - Arrow keys navigate, Enter opens, Esc closes
 - **System tray** - Persists in tray when closed, toggle with click or global hotkey

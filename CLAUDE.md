@@ -15,7 +15,8 @@ src/
 ├── main.rs              # Application entry, Qt setup
 ├── bridge/              # Qt/QML bridge objects (cxx-qt)
 │   ├── search_engine.rs # SearchEngine QObject - search, bookmarks, results, context menu
-│   └── preview_bridge.rs # PreviewBridge QObject - file preview generation
+│   ├── preview_bridge.rs # PreviewBridge QObject - file preview generation
+│   └── tag_bridge.rs    # TagBridge QObject - tagdex tag lookup and editing
 ├── search/              # Core search engine
 │   ├── engine.rs        # CoreEngine - owns index, database, background threads
 │   ├── trigram.rs       # TrigramIndex - in-memory trigram posting lists
@@ -29,6 +30,7 @@ src/
 │   ├── media.rs         # Audio/video metadata via ffprobe
 │   ├── archive.rs       # ZIP/TAR contents listing
 │   └── directory.rs     # Directory listing
+├── tagstore.rs          # Read-only tagdex index parser + tagdex CLI writer (see Tagging)
 ├── config.rs            # JSON config load/save (~/.config/archnav/config.json)
 ├── ipc.rs               # Unix socket IPC server for toggle command
 ├── toggle.rs            # Toggle client (--toggle flag)
@@ -53,6 +55,7 @@ qml/
 ├── ResultsList.qml      # File results ListView with delegates
 ├── PreviewPanel.qml     # Preview pane (text, images, audio art, metadata)
 ├── BookmarkDialog.qml   # Bookmark management dialog (Ctrl+B)
+├── TagDialog.qml        # Tag editor dialog (Ctrl+T)
 └── Style.qml            # Singleton with colors, fonts, spacing
 ```
 
@@ -119,6 +122,15 @@ The search engine uses **trigram indexing** for instant substring matching:
 - **Async watcher setup**: Engine reports "ready" immediately after index load; inotify watches are set up in background thread
 - **Count-based cache validation**: Compares cached file count vs actual to detect staleness
 
+## Tagging (tagdex integration)
+
+archnav surfaces file tags from [tagdex](https://github.com/clearcmos/tagdex) stores (a `.tagstore/index.json` at a tree root, designed for filesystems without xattr support such as CIFS NAS mounts).
+
+- **Single-writer principle**: archnav parses `.tagstore/index.json` directly for display (`src/tagstore.rs`, cached by index mtime+size plus a 5s-TTL store-root discovery cache keyed by directory), but every mutation shells out to the `tagdex` CLI so the store lock, atomic index writes, content fingerprints, and xattr mirroring stay in one implementation. Never write the index JSON from archnav.
+- **UI**: Tags column in results (rightmost), tags of the selected file in the status bar, Ctrl+T edit dialog (comma-separated, empty clears). The tagdex binary is resolved at `~/.local/bin/tagdex` first (KDE autostart PATH lacks it), `TAGDEX_BIN` overrides.
+- **`t:` search filter**: `t: a b` = a OR b; `&` or uppercase `AND` join (`t: a&b`, `t:a AND b`); uppercase `OR` is an explicit separator; lowercase `and` stays a tag name; `t:` alone = any tagged file; text must precede a detached `t:` group. Matching is case-insensitive substring.
+- **Engine path**: tag queries invert the search - candidates come from the tag stores (roots discovered via the `.tagstore` path component in the trigram index), so a `t:`-only query costs O(tagged files), not a 600k-file scan. Tag queries bypass the incremental search cache entirely: cache refinement filters with `matches_path()`, which is tag-blind, and would serve wrong results for refined tag queries.
+
 ## Key Features
 
 - **Instant search**: Sub-10ms search across 600k+ files via trigram index
@@ -127,6 +139,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 - **Fuzzy search**: `~query` for typo-tolerant matching
 - **Path-aware search**: `src/config` to match files under specific directories
 - **Folders-only filter**: `folder:movies` or `folder: movies` to show directories whose own name matches (folders nested under a matching directory are excluded)
+- **Tag filter**: `t:coffee`, `t: coffee outdoor` (OR), `t: coffee&outdoor` / `t:coffee AND outdoor` (AND) - filters by tagdex tags (see Tagging)
 - **Extension filtering**: `*.py query` to filter by file extension
 - **Sort options**: Recent, Oldest, Name A-Z/Z-A, Largest, Smallest, Path
 - **Smart previews**: Text, images, audio/video metadata, archive contents

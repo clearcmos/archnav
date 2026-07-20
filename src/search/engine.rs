@@ -260,6 +260,23 @@ impl CoreEngine {
         let start = Instant::now();
         let sort_order = SortOrder::from_index(sort_index);
 
+        // Tag-filtered queries (t: tokens) bypass the incremental cache
+        // entirely: cache refinement filters with matches_path(), which
+        // knows nothing about tags, so a refined tag query served from the
+        // cache would return wrong results. They also never populate the
+        // cache. Candidates come from the tagdex stores (see search_tagged).
+        let parsed = ParsedQuery::parse(raw_query, sort_order);
+        if parsed.has_tag_filter() {
+            let idx = self.index.read().unwrap();
+            let results = idx.search_tagged(&parsed);
+            debug!(
+                "[ENGINE] tag search: '{}' -> {} results",
+                raw_query,
+                results.len()
+            );
+            return (results, start.elapsed());
+        }
+
         // Get a sequence number for this search
         let my_seq = self.search_seq.fetch_add(1, Ordering::SeqCst) + 1;
 

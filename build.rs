@@ -63,6 +63,7 @@ fn main() {
                 .qml_file("qml/ResultsList.qml")
                 .qml_file("qml/PreviewPanel.qml")
                 .qml_file("qml/BookmarkDialog.qml")
+                .qml_file("qml/TagDialog.qml")
                 .qml_file(QmlFile::from("qml/Style.qml").singleton(true)),
         )
         .qt_module("Qml")
@@ -73,6 +74,7 @@ fn main() {
         .files([
             "src/bridge/search_engine.rs",
             "src/bridge/preview_bridge.rs",
+            "src/bridge/tag_bridge.rs",
         ])
         .cc_builder(|cc| {
             // Qt debug handler

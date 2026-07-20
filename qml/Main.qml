@@ -40,6 +40,7 @@ ApplicationWindow {
     property int pathColumnWidth: Math.round(400 * Style.zoomFactor)
     property int sizeColumnWidth: Math.round(80 * Style.zoomFactor)
     property int dateColumnWidth: Math.round(150 * Style.zoomFactor)
+    property int tagsColumnWidth: Math.round(180 * Style.zoomFactor)
 
     // Rust bridge objects
     SearchEngine {
@@ -69,9 +70,29 @@ ApplicationWindow {
         id: preview
     }
 
+    TagBridge {
+        id: tagBridge
+    }
+
     BookmarkDialog {
         id: bookmarkDialog
         searchEngine: engine
+    }
+
+    TagDialog {
+        id: tagDialog
+        tagBridge: tagBridge
+    }
+
+    // Keep the visible row in sync after a tag edit lands
+    Connections {
+        target: tagBridge
+        function onTagsSaved() {
+            if (resultsList.currentIndex >= 0) {
+                resultsModel.setProperty(
+                    resultsList.currentIndex, "tags", tagBridge.tags.toString())
+            }
+        }
     }
 
     // Results data
@@ -82,15 +103,21 @@ ApplicationWindow {
     function updateResults() {
         resultsModel.clear()
         for (var i = 0; i < engine.result_count; i++) {
+            var p = engine.result_path_at(i)
+            var d = engine.result_is_dir_at(i)
             resultsModel.append({
-                path: engine.result_path_at(i),
-                isDir: engine.result_is_dir_at(i),
+                path: p,
+                isDir: d,
                 filename: engine.result_filename_at(i),
                 mtime: engine.result_mtime_at(i),
-                fileSize: engine.result_size_at(i)
+                fileSize: engine.result_size_at(i),
+                tags: tagBridge.tags_for(p, d).toString()
             })
         }
         resultsList.currentIndex = resultsModel.count > 0 ? 0 : -1
+        // currentIndex may not change value across searches (0 -> 0), so the
+        // onCurrentIndexChanged hook alone would leave stale tags displayed.
+        updateTags()
     }
 
     function openSelected() {
@@ -117,6 +144,28 @@ ApplicationWindow {
         if (item) {
             preview.request_preview(item.path, item.isDir, previewPanel.contentWidth)
         }
+    }
+
+    function updateTags() {
+        if (resultsList.currentIndex < 0) {
+            tagBridge.clear()
+            return
+        }
+        var item = resultsModel.get(resultsList.currentIndex)
+        if (item) {
+            tagBridge.load_tags(item.path, item.isDir)
+        } else {
+            tagBridge.clear()
+        }
+    }
+
+    function editTags() {
+        if (resultsList.currentIndex < 0) return
+        var item = resultsModel.get(resultsList.currentIndex)
+        if (!item || item.isDir) return
+        tagDialog.filePath = item.path
+        tagDialog.fileName = item.filename
+        tagDialog.open()
     }
 
     function setSortOrder(sortIndex) {
@@ -316,15 +365,29 @@ ApplicationWindow {
                     }
                 }
 
-                // Date Modified header (last column - not resizable)
+                // Date Modified header
                 HeaderButton {
                     id: dateHeader
                     Layout.preferredWidth: dateColumnWidth
                     text: "Modified"
                     sortState: dateSortState
                     alignment: Text.AlignRight
-                    resizable: false
+                    resizable: true
+                    minWidth: 100
                     onClicked: sortByDate()
+                    onWidthChangeRequested: function(newWidth) {
+                        dateColumnWidth = newWidth
+                    }
+                }
+
+                // Tags header (last column - not resizable, not sortable:
+                // tags live in tagdex stores, outside the engine's sorters)
+                HeaderButton {
+                    id: tagsHeader
+                    Layout.preferredWidth: tagsColumnWidth
+                    text: "Tags"
+                    sortState: 0
+                    resizable: false
                 }
 
                 // Flexible spacer to fill remaining space after all columns
@@ -350,8 +413,12 @@ ApplicationWindow {
                 pathColumnWidth: root.pathColumnWidth
                 sizeColumnWidth: root.sizeColumnWidth
                 dateColumnWidth: root.dateColumnWidth
+                tagsColumnWidth: root.tagsColumnWidth
 
-                onCurrentIndexChanged: updatePreview()
+                onCurrentIndexChanged: {
+                    updatePreview()
+                    updateTags()
+                }
                 onItemDoubleClicked: openSelected()
                 onContextMenuRequested: function(path, globalX, globalY) {
                     engine.show_context_menu(path, globalX, globalY)
@@ -399,6 +466,16 @@ ApplicationWindow {
                     visible: frecencyMode
                 }
 
+                // Tags of the selected file (from its tagdex store, if any)
+                Label {
+                    text: "Tags: " + tagBridge.tags
+                    color: Style.accentBlue
+                    font.pixelSize: Style.fontSizeSmall
+                    visible: tagBridge.tags.toString() !== ""
+                    elide: Text.ElideRight
+                    Layout.maximumWidth: Math.round(parent.width * 0.5)
+                }
+
                 Item { Layout.fillWidth: true }
 
                 Label {
@@ -436,6 +513,10 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+B"
         onActivated: bookmarkDialog.open()
+    }
+    Shortcut {
+        sequence: "Ctrl+T"
+        onActivated: editTags()
     }
     Shortcut {
         sequence: "Ctrl+O"
@@ -569,6 +650,15 @@ ApplicationWindow {
 
                     Label { text: "Ctrl+B"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                     Label { text: "Manage bookmarks"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "Ctrl+T"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Edit tags of selected file"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "t: a b"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Filter by tag a OR b (t: alone = any tagged file)"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
+
+                    Label { text: "t: a&b"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                    Label { text: "Filter by tag a AND b (also: t: a AND b)"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
 
                     // Separator
                     Item { Layout.columnSpan: 2; Layout.preferredHeight: Math.round(4 * Style.zoomFactor) }

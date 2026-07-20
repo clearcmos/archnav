@@ -17,6 +17,7 @@ ListView {
     property int pathColumnWidth: 400
     property int sizeColumnWidth: 90
     property int dateColumnWidth: 180
+    property int tagsColumnWidth: 180
 
     delegate: ItemDelegate {
         id: delegateItem
@@ -138,6 +139,23 @@ ListView {
                     color: delegateItem.ListView.isCurrentItem ? Style.textHighlighted : Style.textTertiary
                     font.pixelSize: Style.fontSizeNormal
                     horizontalAlignment: Text.AlignRight
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+
+            // Tags column (tagdex tags of the file, empty when untagged)
+            Item {
+                Layout.preferredWidth: listView.tagsColumnWidth
+                Layout.fillHeight: true
+
+                Label {
+                    anchors.fill: parent
+                    anchors.leftMargin: Style.marginNormal
+                    anchors.rightMargin: Style.marginSmall
+                    text: model.tags || ""
+                    color: delegateItem.ListView.isCurrentItem ? Style.textHighlighted : Style.accentBlue
+                    font.pixelSize: Style.fontSizeNormal
+                    elide: Text.ElideRight
                     verticalAlignment: Text.AlignVCenter
                 }
             }

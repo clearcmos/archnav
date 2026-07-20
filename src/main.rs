@@ -6,6 +6,7 @@ pub mod ipc;
 pub mod preview;
 pub mod search;
 pub mod system_tray;
+pub mod tagstore;
 pub mod toggle;
 
 use cxx_qt_lib::{QQmlApplicationEngine, QUrl};

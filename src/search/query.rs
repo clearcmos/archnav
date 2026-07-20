@@ -102,6 +102,69 @@ pub enum FileTypeMode {
     GotoDir,
 }
 
+/// One tag filter group from a `t:` token, in disjunctive normal form:
+/// the group matches when ANY alternative matches, and an alternative
+/// (an AND-set built with `&`/`AND`) matches when ALL its names do.
+/// Empty alternatives (a bare trailing `t:`) mean "any tagged file".
+#[derive(Debug, Clone, PartialEq)]
+pub struct TagFilter {
+    pub alternatives: Vec<Vec<String>>,
+}
+
+impl TagFilter {
+    /// Parse the tokens of one tag group: spaces separate OR-alternatives,
+    /// `&` (attached or standalone) and uppercase `AND` join an AND-set,
+    /// uppercase `OR` is an explicit no-op separator.
+    fn parse_group(tokens: &[&str]) -> Self {
+        let mut alternatives: Vec<Vec<String>> = Vec::new();
+        let mut pending_and = false;
+        for &raw in tokens {
+            if raw == "&" || raw == "AND" {
+                pending_and = true;
+                continue;
+            }
+            if raw == "OR" {
+                pending_and = false;
+                continue;
+            }
+            if raw.starts_with('&') {
+                pending_and = true;
+            }
+            let parts: Vec<String> = raw
+                .split('&')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect();
+            let trails = raw.ends_with('&');
+            if !parts.is_empty() {
+                if pending_and && !alternatives.is_empty() {
+                    alternatives.last_mut().unwrap().extend(parts);
+                } else {
+                    alternatives.push(parts);
+                }
+                pending_and = false;
+            }
+            if trails {
+                pending_and = true;
+            }
+        }
+        Self { alternatives }
+    }
+
+    fn matches(&self, tags_lower: &[String]) -> bool {
+        if self.alternatives.is_empty() {
+            return !tags_lower.is_empty();
+        }
+        self.alternatives.iter().any(|and_set| {
+            and_set.iter().all(|name| {
+                let n = name.to_lowercase();
+                tags_lower.iter().any(|t| t.contains(&n))
+            })
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedQuery {
     pub mode: QueryMode,
@@ -110,6 +173,8 @@ pub struct ParsedQuery {
     pub sort_order: SortOrder,
     /// Path segments for path-aware search (e.g., "src/config" -> ["src", "config"])
     pub path_segments: Option<Vec<String>>,
+    /// Tag filter groups from `t:` tokens; every group must match (AND).
+    pub tag_filters: Vec<TagFilter>,
 }
 
 impl ParsedQuery {
@@ -205,16 +270,82 @@ impl ParsedQuery {
             (FileTypeMode::All, raw_trimmed)
         };
 
-        // Split into tokens and find extension filter anywhere in query
+        // Split into tokens and find extension and tag filters anywhere in query
         let tokens: Vec<&str> = raw_effective.split_whitespace().collect();
         let mut query_tokens: Vec<&str> = Vec::new();
+        let mut tag_filters: Vec<TagFilter> = Vec::new();
 
-        for token in tokens {
+        let is_tag_token =
+            |t: &str| t.get(..2).is_some_and(|p| p.eq_ignore_ascii_case("t:"));
+
+        let mut i = 0;
+        while i < tokens.len() {
+            let token = tokens[i];
             if token.starts_with("*.") && token.len() > 2 {
                 // Extension filter like "*.pdf" - extract extension
                 extension_filter = Some(token[2..].to_string());
+                i += 1;
+            } else if is_tag_token(token) {
+                // Tag filter. Attached form "t:coffee" is a single group from
+                // this token, extended only by explicit connectives so that
+                // "t:coffee AND outdoor" joins while "t:coffee patio" keeps
+                // patio as search text. Detached form "t: ..." consumes the
+                // remaining tokens as one tag group - spaces are OR, & / AND
+                // join - so search text must come before it. A bare trailing
+                // "t:" means "any tagged file".
+                let value = &token[2..];
+                if !value.is_empty() {
+                    let mut group_tokens: Vec<&str> = vec![value];
+                    while i + 1 < tokens.len() {
+                        let next = tokens[i + 1];
+                        let is_operator = next == "&" || next == "AND" || next == "OR";
+                        if is_operator {
+                            // consume the operator and its operand (unless the
+                            // operand starts its own filter, e.g. "AND t:x")
+                            group_tokens.push(next);
+                            i += 1;
+                            if i + 1 < tokens.len()
+                                && !is_tag_token(tokens[i + 1])
+                                && !tokens[i + 1].starts_with("*.")
+                            {
+                                group_tokens.push(tokens[i + 1]);
+                                i += 1;
+                            }
+                        } else if next.starts_with('&') {
+                            // "t:coffee &outdoor"
+                            group_tokens.push(next);
+                            i += 1;
+                        } else if group_tokens.last().is_some_and(|t| t.ends_with('&')) {
+                            // "t:coffee& outdoor"
+                            group_tokens.push(next);
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    tag_filters.push(TagFilter::parse_group(&group_tokens));
+                    i += 1;
+                } else {
+                    i += 1;
+                    let mut group_tokens: Vec<&str> = Vec::new();
+                    while i < tokens.len() {
+                        let t = tokens[i];
+                        if is_tag_token(t) {
+                            break; // next t: group; the outer loop handles it
+                        }
+                        if t.starts_with("*.") && t.len() > 2 {
+                            extension_filter = Some(t[2..].to_string());
+                            i += 1;
+                            continue;
+                        }
+                        group_tokens.push(t);
+                        i += 1;
+                    }
+                    tag_filters.push(TagFilter::parse_group(&group_tokens));
+                }
             } else {
                 query_tokens.push(token);
+                i += 1;
             }
         }
 
@@ -234,6 +365,7 @@ impl ParsedQuery {
                 file_type_mode,
                 sort_order,
                 path_segments: None,
+                tag_filters,
             };
         }
 
@@ -264,6 +396,7 @@ impl ParsedQuery {
                     file_type_mode,
                     sort_order,
                     path_segments,
+                    tag_filters,
                 };
             } else if segments.len() == 1 {
                 // "src/" with trailing slash - treat as normal search for "src"
@@ -295,7 +428,22 @@ impl ParsedQuery {
             file_type_mode,
             sort_order,
             path_segments,
+            tag_filters,
         }
+    }
+
+    /// Whether this query filters by tagdex tags (t: tokens).
+    pub fn has_tag_filter(&self) -> bool {
+        !self.tag_filters.is_empty()
+    }
+
+    /// Check a file's tags against every t: filter group (groups are ANDed;
+    /// within a group, spaces are OR and & / AND join). Name matching is
+    /// case-insensitive substring, consistent with the rest of the search
+    /// syntax; an empty group (bare "t:") requires any tag at all.
+    pub fn tags_match(&self, tags: &[String]) -> bool {
+        let tags_lower: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
+        self.tag_filters.iter().all(|filter| filter.matches(&tags_lower))
     }
 
     /// Whether this query restricts results to directories only.
@@ -517,6 +665,156 @@ mod tests {
         // Regular (non-folder:) search still matches anywhere in the path.
         let q = ParsedQuery::parse("tattoo", SortOrder::MtimeDesc);
         assert!(q.matches_path("/home/u/tattoo/designs/photo.jpg"));
+    }
+
+    fn alts(q: &ParsedQuery) -> Vec<Vec<Vec<String>>> {
+        q.tag_filters.iter().map(|f| f.alternatives.clone()).collect()
+    }
+
+    fn group(alternatives: &[&[&str]]) -> Vec<Vec<String>> {
+        alternatives
+            .iter()
+            .map(|a| a.iter().map(|s| s.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn test_parse_tag_filter_attached() {
+        let q = ParsedQuery::parse("t:coffee", SortOrder::MtimeDesc);
+        assert_eq!(alts(&q), vec![group(&[&["coffee"]])]);
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s.is_empty()));
+    }
+
+    #[test]
+    fn test_parse_tag_filter_detached_single() {
+        let q = ParsedQuery::parse("t: coffee", SortOrder::MtimeDesc);
+        assert_eq!(alts(&q), vec![group(&[&["coffee"]])]);
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s.is_empty()));
+    }
+
+    #[test]
+    fn test_parse_tag_filter_detached_or_list() {
+        // "t: coffee outdoor" - either tag is enough
+        let q = ParsedQuery::parse("t: coffee outdoor", SortOrder::MtimeDesc);
+        assert_eq!(alts(&q), vec![group(&[&["coffee"], &["outdoor"]])]);
+        assert!(q.tags_match(&["coffee".into()]));
+        assert!(q.tags_match(&["outdoor".into()]));
+        assert!(q.tags_match(&["coffee".into(), "outdoor".into()]));
+        assert!(!q.tags_match(&["dog".into()]));
+    }
+
+    #[test]
+    fn test_parse_tag_filter_ampersand_forms_are_and() {
+        for raw in ["t: coffee&outdoor", "t: coffee & outdoor", "t: coffee AND outdoor"] {
+            let q = ParsedQuery::parse(raw, SortOrder::MtimeDesc);
+            assert_eq!(alts(&q), vec![group(&[&["coffee", "outdoor"]])], "raw: {raw}");
+            assert!(q.tags_match(&["coffee".into(), "outdoor".into()]), "raw: {raw}");
+            assert!(!q.tags_match(&["coffee".into()]), "raw: {raw}");
+        }
+    }
+
+    #[test]
+    fn test_parse_tag_filter_and_binds_tighter_than_or() {
+        // (a AND b) OR c
+        let q = ParsedQuery::parse("t: a&b c", SortOrder::MtimeDesc);
+        assert_eq!(alts(&q), vec![group(&[&["a", "b"], &["c"]])]);
+        assert!(q.tags_match(&["a".into(), "b".into()]));
+        assert!(q.tags_match(&["c".into()]));
+        assert!(!q.tags_match(&["a".into()]));
+    }
+
+    #[test]
+    fn test_parse_attached_tag_extends_via_connectives() {
+        // No space after t: - explicit operators still join the group
+        for raw in [
+            "t:coffee AND outdoor",
+            "t:coffee & outdoor",
+            "t:coffee &outdoor",
+            "t:coffee& outdoor",
+            "t:coffee&outdoor",
+        ] {
+            let q = ParsedQuery::parse(raw, SortOrder::MtimeDesc);
+            assert_eq!(alts(&q), vec![group(&[&["coffee", "outdoor"]])], "raw: {raw}");
+            assert!(matches!(q.mode, QueryMode::Substring(ref s) if s.is_empty()), "raw: {raw}");
+        }
+        // OR connective on the attached form
+        let q = ParsedQuery::parse("t:coffee OR outdoor", SortOrder::MtimeDesc);
+        assert_eq!(alts(&q), vec![group(&[&["coffee"], &["outdoor"]])]);
+        // Chaining
+        let q = ParsedQuery::parse("t:a AND b AND c", SortOrder::MtimeDesc);
+        assert_eq!(alts(&q), vec![group(&[&["a", "b", "c"]])]);
+    }
+
+    #[test]
+    fn test_parse_attached_tag_plain_word_stays_text() {
+        // Regression guard: without a connective, text after an attached
+        // t:tag remains search text, not a tag.
+        let q = ParsedQuery::parse("t:coffee patio", SortOrder::MtimeDesc);
+        assert_eq!(alts(&q), vec![group(&[&["coffee"]])]);
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "patio"));
+    }
+
+    #[test]
+    fn test_parse_attached_tag_connective_into_new_group() {
+        // "AND t:x" starts its own group rather than swallowing it as a name
+        let q = ParsedQuery::parse("t:coffee AND t:2024", SortOrder::MtimeDesc);
+        assert_eq!(q.tag_filters.len(), 2);
+        assert!(q.tags_match(&["coffee".into(), "2024".into()]));
+        assert!(!q.tags_match(&["coffee".into()]));
+    }
+
+    #[test]
+    fn test_parse_tag_filter_lowercase_and_is_a_tag_name() {
+        // Only "&" and uppercase "AND" are operators; "and" stays a name.
+        let q = ParsedQuery::parse("t: rock and roll", SortOrder::MtimeDesc);
+        assert_eq!(alts(&q), vec![group(&[&["rock"], &["and"], &["roll"]])]);
+    }
+
+    #[test]
+    fn test_parse_text_before_detached_tag_filter() {
+        let q = ParsedQuery::parse("patio t: coffee outdoor", SortOrder::MtimeDesc);
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "patio"));
+        assert_eq!(alts(&q), vec![group(&[&["coffee"], &["outdoor"]])]);
+    }
+
+    #[test]
+    fn test_parse_extension_inside_tag_list() {
+        let q = ParsedQuery::parse("t: coffee *.jpg outdoor", SortOrder::MtimeDesc);
+        assert_eq!(q.extension_filter, Some("jpg".to_string()));
+        assert_eq!(alts(&q), vec![group(&[&["coffee"], &["outdoor"]])]);
+    }
+
+    #[test]
+    fn test_parse_multiple_tag_groups_are_anded() {
+        let q = ParsedQuery::parse("t:coffee t:2024", SortOrder::MtimeDesc);
+        assert_eq!(q.tag_filters.len(), 2);
+        assert!(q.tags_match(&["coffee".into(), "2024".into(), "x".into()]));
+        assert!(!q.tags_match(&["coffee".into()])); // AND: both groups must hold
+    }
+
+    #[test]
+    fn test_parse_bare_trailing_tag_filter_means_any_tag() {
+        let q = ParsedQuery::parse("t:", SortOrder::MtimeDesc);
+        assert_eq!(alts(&q), vec![Vec::<Vec<String>>::new()]);
+        assert!(q.tags_match(&["anything".into()]));
+        assert!(!q.tags_match(&[]));
+    }
+
+    #[test]
+    fn test_tags_match_case_insensitive_substring() {
+        let q = ParsedQuery::parse("t:Head", SortOrder::MtimeDesc);
+        assert!(q.tags_match(&["headshot".into()]));
+        assert!(!q.tags_match(&["outdoor".into()]));
+    }
+
+    #[test]
+    fn test_no_tag_filter_on_plain_query() {
+        let q = ParsedQuery::parse("coffee", SortOrder::MtimeDesc);
+        assert!(!q.has_tag_filter());
+        // "toffee.txt" style names starting with t but no colon are untouched
+        let q = ParsedQuery::parse("toffee", SortOrder::MtimeDesc);
+        assert!(!q.has_tag_filter());
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "toffee"));
     }
 
     #[test]
