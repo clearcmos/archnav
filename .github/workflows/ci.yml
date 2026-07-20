@@ -21,10 +21,23 @@ jobs:
     container: archlinux:latest
     timeout-minutes: 30
     steps:
+      # Package downloads are the slowest cold phase; restore last run's
+      # pacman cache (always saved fresh via the run_id key + prefix restore,
+      # so package upgrades accumulate instead of going stale).
+      - uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5
+        with:
+          path: /var/cache/pacman/pkg
+          key: pacman-${{ github.run_id }}
+          restore-keys: |
+            pacman-
       - run: pacman -Syu --noconfirm base-devel rust cargo-llvm-cov llvm qt6-base qt6-declarative kio kservice kcoreaddons pkgconf git
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+      # Caches the cargo registry and target/ keyed on Cargo.lock + rustc
+      # version, sparing the two cold compiles (clippy and llvm-cov) when
+      # dependencies are unchanged.
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       # Runs the test suite under coverage instrumentation. The ignore regex
