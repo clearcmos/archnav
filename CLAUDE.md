@@ -79,6 +79,11 @@ cargo build --release
 
 # Run with debug logging
 RUST_LOG=archnav=debug cargo run
+
+# Test / lint / format (all three are enforced by CI on push and PR)
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt
 ```
 
 ## Dependencies

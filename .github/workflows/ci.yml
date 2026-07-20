@@ -1,0 +1,20 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    # Arch container: this is an Arch-targeted app (PKGBUILD installs it) and
+    # the Qt6 + KDE Frameworks 6 build deps match the target system exactly.
+    container: archlinux:latest
+    timeout-minutes: 30
+    steps:
+      - run: pacman -Syu --noconfirm base-devel rust qt6-base qt6-declarative kio kservice kcoreaddons pkgconf git
+      - uses: actions/checkout@v4
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
