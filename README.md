@@ -69,6 +69,7 @@ This installs `archnav` to `/usr/bin/`, registers the desktop file, and ships th
 | `Ctrl+P` | Toggle preview pane |
 | `Ctrl+R` | Refresh index |
 | `Ctrl+B` | Manage bookmarks |
+| `Ctrl+T` | Edit tags of selected file |
 | `Ctrl+Shift+F` | Toggle frecency sort |
 | `Ctrl+=` / `Ctrl+-` | Zoom in / out |
 | `Ctrl+0` | Reset zoom |
@@ -180,6 +181,7 @@ Single unified Rust application using cxx-qt for Qt/QML bindings:
 - **Search engine**: Trigram-based posting lists with SQLite persistence
 - **File watcher**: inotify for real-time local filesystem updates
 - **Preview system**: Text, media (via ffprobe), archives, directories
+- **Tag store**: Native tag engine + `archnav tag` CLI ([format spec](docs/tagstore-format.md))
 - **Qt/QML GUI**: Dark theme, responsive layout with split view
 
 ## Data Locations

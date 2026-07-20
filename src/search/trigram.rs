@@ -595,7 +595,7 @@ impl TrigramIndex {
         self.trigrams.len()
     }
 
-    /// Roots of tagdex tag stores known to the index (paths containing a
+    /// Roots of tag stores known to the index (paths containing a
     /// .tagstore component). Discovery rides on the trigram index itself, so
     /// only stores under scanned bookmarks are visible to t: queries.
     fn tag_store_roots(&self) -> Vec<String> {
@@ -617,7 +617,7 @@ impl TrigramIndex {
     }
 
     /// Search driven by tag filters (t: tokens). Candidates come from the
-    /// tagdex store indexes rather than the trigram index, so a t:-only
+    /// tag store indexes rather than the trigram index, so a t:-only
     /// query costs O(tagged files) instead of scanning all files; any text,
     /// extension, and path constraints in the query still apply on top.
     pub fn search_tagged(&self, query: &ParsedQuery) -> Vec<SearchAllResult> {
@@ -642,7 +642,7 @@ impl TrigramIndex {
                     continue;
                 }
                 if query.dirs_only() {
-                    continue; // tagdex entries are always regular files
+                    continue; // tag store entries are always regular files
                 }
                 let path = format!("{}/{}", root, rel);
                 if !query.matches_path(&path) {
@@ -671,7 +671,7 @@ impl TrigramIndex {
                                 .unwrap_or(0);
                             (mtime, meta.len())
                         }
-                        Err(_) => continue, // stale index entry; tagdex repair reconciles
+                        Err(_) => continue, // stale index entry; `archnav tag repair` reconciles
                     }
                 };
                 results.push(SearchAllResult {

@@ -143,7 +143,7 @@ ListView {
                 }
             }
 
-            // Tags column (tagdex tags of the file, empty when untagged)
+            // Tags column (tag store tags of the file, empty when untagged)
             Item {
                 Layout.preferredWidth: listView.tagsColumnWidth
                 Layout.fillHeight: true

@@ -163,7 +163,7 @@ archnav owns a complete native tag system (format spec: docs/tagstore-format.md;
 - **Fuzzy search**: `~query` for typo-tolerant matching
 - **Path-aware search**: `src/config` to match files under specific directories
 - **Folders-only filter**: `folder:movies` or `folder: movies` to show directories whose own name matches (folders nested under a matching directory are excluded)
-- **Tag filter**: `t:coffee`, `t: coffee outdoor` (OR), `t: coffee&outdoor` / `t:coffee AND outdoor` (AND) - filters by tagdex tags (see Tagging)
+- **Tag filter**: `t:coffee`, `t: coffee outdoor` (OR), `t: coffee&outdoor` / `t:coffee AND outdoor` (AND) - filters by tags (see Tagging)
 - **Extension filtering**: `*.py query` to filter by file extension
 - **Sort options**: Recent, Oldest, Name A-Z/Z-A, Largest, Smallest, Path
 - **Smart previews**: Text, images, audio/video metadata, archive contents

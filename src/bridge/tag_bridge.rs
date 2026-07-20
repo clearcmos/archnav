@@ -45,8 +45,8 @@ use crate::tagstore::{self, TagLookup};
 /// Rust backing struct for the TagBridge QObject.
 ///
 /// `tags` is the display string ("a, b, c"), empty when untagged or when the
-/// file is outside any tag store. Reads parse the tagdex index directly;
-/// writes go through the tagdex CLI (see src/tagstore.rs for the rationale).
+/// file is outside any tag store. Reads and writes both go through the
+/// native engine in src/tagstore/ (the single writer of the format).
 pub struct TagBridgeRust {
     tags: QString,
     has_store: bool,
