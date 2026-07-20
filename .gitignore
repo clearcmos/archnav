@@ -1,4 +1,5 @@
-__pycache__/
+# cargo build artifacts
 target/
-*.pyc
+
+# local scratch notes, never committed
 TEST.md
