@@ -24,7 +24,7 @@ jobs:
       # Package downloads are the slowest cold phase; restore last run's
       # pacman cache (always saved fresh via the run_id key + prefix restore,
       # so package upgrades accumulate instead of going stale).
-      - uses: actions/cache@8b402f58fbc84540c8b491a91e594a4576fec3d7 # v5
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: /var/cache/pacman/pkg
           key: pacman-${{ github.run_id }}
