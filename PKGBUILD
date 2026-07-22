@@ -1,4 +1,4 @@
-# Maintainer: Nicholas Bedros <nicbedros@gmail.com>
+# Maintainer: clearcmos <clear.cmos@outlook.com>
 pkgname=archnav-git
 pkgver=0.1.0.r0.0000000
 pkgrel=1
