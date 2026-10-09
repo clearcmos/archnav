@@ -25,6 +25,9 @@ public:
     SystemTray(ToggleCallback toggleCb, ExitCallback exitCb);
     ~SystemTray();
 
+    SystemTray(const SystemTray &) = delete;
+    SystemTray &operator=(const SystemTray &) = delete;
+
     /**
      * Set the preferred hotkey (for reference only).
      * Actual hotkey must be configured via KDE System Settings.
