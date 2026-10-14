@@ -312,12 +312,8 @@ impl Database {
                 if !index.files.contains_key(&file_id) {
                     continue; // dangling trigram row for an already-removed file
                 }
-                for chunk in blob.chunks_exact(3) {
-                    index
-                        .trigrams
-                        .entry([chunk[0], chunk[1], chunk[2]])
-                        .or_default()
-                        .insert(file_id);
+                for &trigram in blob.as_chunks::<3>().0 {
+                    index.trigrams.entry(trigram).or_default().insert(file_id);
                 }
                 backfilled += 1;
             }
@@ -376,9 +372,7 @@ impl Database {
             let id = entry.id;
 
             let trigrams: Vec<[u8; 3]> = if let Some(blob) = trigram_blob {
-                blob.chunks_exact(3)
-                    .map(|chunk| [chunk[0], chunk[1], chunk[2]])
-                    .collect()
+                blob.as_chunks::<3>().0.to_vec()
             } else {
                 recomputed += 1;
                 let computed = TrigramIndex::compute_trigrams(&entry.path);
@@ -663,8 +657,8 @@ fn pack_u32_ids(ids: &HashSet<u32>) -> Vec<u8> {
 /// Unpack a BLOB into a HashSet of u32 IDs.
 fn unpack_u32_ids(blob: &[u8]) -> HashSet<u32> {
     let mut ids = HashSet::with_capacity(blob.len() / 4);
-    for chunk in blob.chunks_exact(4) {
-        ids.insert(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    for &bytes in blob.as_chunks::<4>().0 {
+        ids.insert(u32::from_le_bytes(bytes));
     }
     ids
 }
