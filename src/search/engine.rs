@@ -8,7 +8,7 @@ use tracing::{debug, info, warn};
 
 use super::database::{start_db_thread, Database, DbOp};
 use super::integrity::{start_integrity_checker, start_network_scanner};
-use super::query::{ParsedQuery, QueryMode, SortOrder};
+use super::query::{ParsedQuery, SortOrder};
 use super::scanner::{is_network_mount, path_under_root, reconcile_directory, scan_directory};
 use super::trigram::{Bookmark, SearchAllResult, TrigramIndex, MAX_RESULTS};
 use super::watcher::start_watcher;
@@ -48,28 +48,38 @@ impl SearchCache {
         let old = ParsedQuery::parse(&self.query, self.sort_order);
         let new = ParsedQuery::parse(new_query, new_sort);
 
-        // Filter dimensions must match exactly. Allowing different file-type or
-        // extension filters could expand the result set beyond the cached subset.
-        if old.file_type_mode != new.file_type_mode {
-            return false;
-        }
-        if old.extension_filter != new.extension_filter {
-            return false;
-        }
-        if old.path_segments != new.path_segments {
-            return false;
-        }
+        // Only plain word searches refine (fuzzy thresholds shift with length;
+        // glob/regex don't string-extend), and only when every filter is the
+        // same and the new words and `!words` can only remove results.
+        new.narrows(&old)
+    }
+}
 
-        // Refinement only makes sense when both sides do substring search.
-        // Fuzzy thresholds shift with length; glob/regex don't string-extend.
-        match (&old.mode, &new.mode) {
-            (QueryMode::Substring(old_sub), QueryMode::Substring(new_sub)) => {
-                // Every path containing `new_sub` must also contain `old_sub`.
-                // That holds iff `new_sub` contains `old_sub` as a substring.
-                new_sub.to_lowercase().contains(&old_sub.to_lowercase())
-            }
-            _ => false,
+/// A count with thousands separators: 132402 -> "132,402".
+pub fn group_digits(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
         }
+        out.push(c);
+    }
+    out
+}
+
+/// The status bar text after a search. Says how many paths matched in all
+/// when the result cap cut the list short.
+pub fn results_status(shown: usize, total: usize, millis: u128) -> String {
+    if total > shown {
+        format!(
+            "{} of {} results in {}ms",
+            group_digits(shown),
+            group_digits(total),
+            millis
+        )
+    } else {
+        format!("{} results in {}ms", group_digits(shown), millis)
     }
 }
 
@@ -253,11 +263,13 @@ impl CoreEngine {
 
     /// Search across all locations. Returns results and elapsed time.
     /// Uses incremental caching: if query refines previous query, filters cached results.
+    /// Run a search: the results (capped at max_results), how many paths
+    /// matched in total, and how long it took.
     pub fn search(
         &self,
         raw_query: &str,
         sort_index: i32,
-    ) -> (Vec<SearchAllResult>, std::time::Duration) {
+    ) -> (Vec<SearchAllResult>, usize, std::time::Duration) {
         use std::sync::atomic::Ordering;
 
         let start = Instant::now();
@@ -296,7 +308,7 @@ impl CoreEngine {
                     if dirs_only && !r.is_dir {
                         return false;
                     }
-                    query.matches_path(&r.path)
+                    query.matches_result(&r.path, r.is_dir, r.size, r.mtime)
                 })
                 .cloned()
                 .collect();
@@ -310,8 +322,9 @@ impl CoreEngine {
                 results.len()
             );
 
-            // Update cache with refined results, but only if this is still the most recent search
-            let was_truncated = results.len() >= self.index.read().unwrap().max_results;
+            // The cache held every match of a broader query, so the filtered
+            // set is every match of this one: complete, never truncated.
+            let total = results.len();
             {
                 let mut cache_guard = self.search_cache.write().unwrap();
                 let should_update = match cache_guard.as_ref() {
@@ -325,7 +338,7 @@ impl CoreEngine {
                         results: results.clone(),
                         timestamp: Instant::now(),
                         seq: my_seq,
-                        was_truncated,
+                        was_truncated: false,
                     });
                 } else {
                     debug!(
@@ -335,7 +348,7 @@ impl CoreEngine {
                 }
             }
 
-            return (results, start.elapsed());
+            return (results, total, start.elapsed());
         }
 
         // Full search
@@ -345,7 +358,7 @@ impl CoreEngine {
             "[ENGINE] Cache MISS: '{}', seq={}, doing full search",
             raw_query, my_seq
         );
-        let results = idx.search_all(&query, &[]);
+        let (results, total) = idx.search_all_counted(&query, &[]);
         debug!(
             "[ENGINE] Full search complete: '{}', seq={}, results={}",
             raw_query,
@@ -363,7 +376,7 @@ impl CoreEngine {
             };
 
             if should_update {
-                let was_truncated = results.len() >= idx.max_results;
+                let was_truncated = total > results.len();
                 *cache_guard = Some(SearchCache {
                     query: raw_query.to_string(),
                     sort_order,
@@ -380,7 +393,7 @@ impl CoreEngine {
             }
         }
 
-        (results, start.elapsed())
+        (results, total, start.elapsed())
     }
 
     /// Get current bookmark list.
@@ -532,11 +545,12 @@ impl CoreEngine {
     }
 
     pub fn test_search(&self, query: &str) -> usize {
-        let (results, elapsed) = self.search(query, 0);
+        let (results, total, elapsed) = self.search(query, 0);
         println!(
-            "Search '{}': {} results in {:?}",
+            "Search '{}': {} of {} matches in {:?}",
             query,
             results.len(),
+            total,
             elapsed
         );
         if !results.is_empty() {
@@ -564,6 +578,26 @@ mod cache_tests {
             seq: 0,
             was_truncated: false,
         }
+    }
+
+    #[test]
+    fn exclusions_refine_only_when_they_remove_results() {
+        assert!(cache("movies").is_valid_for("movies !trailer", SortOrder::MtimeDesc));
+        assert!(!cache("movies !t").is_valid_for("movies !tr", SortOrder::MtimeDesc));
+        assert!(cache("left").is_valid_for("left all", SortOrder::MtimeDesc));
+    }
+
+    #[test]
+    fn status_line_reports_the_true_match_count() {
+        assert_eq!(group_digits(0), "0");
+        assert_eq!(group_digits(999), "999");
+        assert_eq!(group_digits(1000), "1,000");
+        assert_eq!(group_digits(1441511), "1,441,511");
+        assert_eq!(results_status(3, 3, 0), "3 results in 0ms");
+        assert_eq!(
+            results_status(500, 132402, 12),
+            "500 of 132,402 results in 12ms"
+        );
     }
 
     #[test]

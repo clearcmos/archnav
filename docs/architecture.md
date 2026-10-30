@@ -51,8 +51,8 @@ The design aims for:
 ## Trigram index
 
 Every indexed path contributes the trigrams of its file name and of each path
-component. A query's trigrams select candidates by intersecting posting lists,
-and the candidates are then checked against the full query:
+component. The trigrams of every query word select candidates by intersecting
+posting lists, and the candidates are then checked against the full query:
 
 ```
 Query: "test"
@@ -66,6 +66,14 @@ Intersection: {1, 99}  <- candidates
 Final filter: the query must match the path (or, for folder:, the folder name)
 ```
 
+The intersection walks the shortest posting list and keeps the ids every other
+list contains, so a common trigram costs one lookup per candidate rather than a
+copy of its list. The candidate checks (words, `!words`, extension, size and
+date filters) run on all cores with rayon. A query with no trigram to narrow
+with skips candidate collection and checks every entry in parallel. Only the
+top `max_results` matches are sorted, after a linear selection picks them, and
+the full match count goes to the status bar ("500 of 146,630 results").
+
 plocate and Google Code Search use the same approach. The cost is set by the
 posting lists the query touches: a rare run of characters narrows the
 candidates to a handful of files, while a very common word leaves many to
@@ -73,26 +81,32 @@ check, and a query with no three-character run (`ab`, or `*.rs` alone) has no
 trigram to narrow with and checks every path.
 
 `archnav --benchmark` measures this against the real index, with the search
-cache cleared between runs. On 1.44M files (i7-13700K), medians were:
+cache cleared between runs. On 1.44M files (i7-13700K, 24 threads), medians
+were:
 
-| Query | Median | Results |
+| Query | Median | Matches |
 |---|---|---|
-| `PKGBUILD` | 31 µs | 57 |
-| `screenshot` | 1.0 ms | 500 |
-| `main` | 2.7 ms | 500 |
-| `archnav` | 4.7 ms | 500 |
-| `package.json` | 29 ms | 500 |
-| `test` | 38 ms | 500 |
-| `config` | 72 ms | 500 |
-| `ab` | 401 ms | 500 |
-| `*.rs` | 406 ms | 500 |
+| `PKGBUILD` | 71 µs | 57 |
+| `report pdf` | 84 µs | 17 |
+| `archnav` | 370 µs | 1,418 |
+| `screenshot` | 404 µs | 1,656 |
+| `package.json` | 409 µs | 889 |
+| `main` | 734 µs | 11,212 |
+| `test` | 5.4 ms | 85,908 |
+| `size:>1G` | 10.6 ms | 1,938 |
+| `dm:thisweek` | 11.0 ms | 19,350 |
+| `config` | 13.2 ms | 146,630 |
+| `*.rs` | 18.6 ms | 7,628 |
+| `ab` | 19.4 ms | 152,944 |
 
 Results are capped at `max_results` (500 by default).
 
 `SearchCache` in `engine.rs` keeps the previous query's results. When the new
-query only extends the old one (typing `con`, then `conf`), it filters those
-results instead of searching again, unless they were truncated at the result
-cap.
+query can only remove matches (typing `con`, then `conf`; adding a word or a
+`!word`), it filters those results instead of searching again, unless they were
+truncated at the result cap. `ParsedQuery::narrows` decides: every old word must
+sit inside a new word, every old `!word` must contain a new one (excluding "ba"
+drops fewer paths than excluding "b"), and every filter must be unchanged.
 
 ## Persistence
 
@@ -158,9 +172,18 @@ Database writer thread
 ## Query syntax
 
 `query.rs` turns the search text into a `ParsedQuery`:
-- `config`: substring over the full path
+- `left all`: every word must appear in the full path, in any order
+  (case-insensitive); the longest word leads the trigram lookup
+- `"all that's"`: quotes keep a phrase together
+- `movies !trailer`: `!word` leaves out paths containing the word
+- `size:>1G`, `size:100M..1G`: size in bytes with binary units; folders,
+  which have no indexed size, never match
+- `dm:thisweek`, `dm:last7days`, `dm:2026-10`, `dm:>2025`: modification time,
+  in local time, with weeks starting on Monday; an incomplete value such as
+  `size:>` is ignored while it is being typed
 - `*.rs config`: extension filter, anywhere in the query
-- `/^README`: regular expression
+- `/^README`: regular expression; the rest of the query is the pattern, so
+  `!`, quotes, and `size:` inside it stay literal
 - `foo*bar`: glob over the file name or path
 - `~confg`: fuzzy match on the file name, with an edit-distance budget that
   grows with query length

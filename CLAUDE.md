@@ -23,7 +23,7 @@ src/
 │   ├── scanner.rs       # Directory scanner using walkdir
 │   ├── watcher.rs       # inotify file watcher for real-time updates
 │   ├── integrity.rs     # Periodic integrity checker + network scanner
-│   └── query.rs         # Query parsing (*.ext, /regex, glob, ~fuzzy, path/aware, folder:)
+│   └── query.rs         # Query parsing (words in any order, !exclude, "phrase", size:, dm:, *.ext, /regex, glob, ~fuzzy, path/aware, folder:)
 ├── preview/             # Preview generators
 │   ├── mod.rs           # Preview dispatch by extension (images, PDF info, binaries)
 │   ├── text.rs          # Text file preview (with size limit), Markdown to HTML
@@ -127,7 +127,7 @@ The search engine uses **trigram indexing** for substring matching:
 
 1. **Trigrams**: Each filename is split into 3-character overlapping sequences
 2. **Posting lists**: Map trigram -> set of file IDs containing it
-3. **Search**: Intersect posting lists for all query trigrams, then filter by substring match
+3. **Search**: Intersect the posting lists of every query word's trigrams (walking the shortest list and checking the others), then filter the candidates on all cores (rayon) and keep the top `max_results` with a linear selection before sorting; the full match count is reported alongside. A query with no trigram to narrow with (`ab`, `*.rs` alone, `size:>1G` alone) skips candidate collection and scans every entry in parallel
 4. **Persistence**: SQLite stores files + posting lists; fast load in about 2-5 s for 1.4M files
 
 ### Performance Optimizations
@@ -148,7 +148,8 @@ The search engine uses **trigram indexing** for substring matching:
 
 ## Key Features
 
-- **Trigram search**: measured with `--benchmark` on a 1.4M-file index (i7-13700K): specific queries in a few ms, very common words (`config`) in tens of ms, and queries without a 3-character run (`ab`, `*.rs` alone) about 0.4 s, since they check every path. Don't quote a single latency figure; it depends on the query
+- **Trigram search**: measured with `--benchmark` on a 1.4M-file index (i7-13700K, 24 threads): most queries under 1 ms, very common words (`config`, 146,630 matches) about 13 ms, and queries without a 3-character run (`ab`, `*.rs` alone) about 20 ms on all cores. Don't quote a single latency figure; it depends on the query
+- **Words, exclusions, filters**: plain words must all appear, in any order; `"..."` keeps a phrase; `!word` excludes; `size:` and `dm:` filter on size (files only) and modification time. Regex queries (`/...`) keep `!`, quotes, and `size:` literal. The result cache (`SearchCache`) reuses earlier results only when `ParsedQuery::narrows` proves the new query can only remove matches: every old word inside a new word, every old `!word` containing a new one, and identical filters
 - **Unified search**: Searches all bookmarks simultaneously by default
 - **Regex search**: `/pattern` for regex matching
 - **Fuzzy search**: `~query` for typo-tolerant matching

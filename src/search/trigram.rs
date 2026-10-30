@@ -1,4 +1,6 @@
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,14 +20,19 @@ impl AccessInfo {
     /// Calculate frecency score. Higher = more relevant.
     /// Combines frequency (open count) with recency (time since last access).
     pub fn frecency_score(&self) -> f64 {
-        if self.open_count == 0 {
-            return 0.0;
-        }
-
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
+        self.frecency_score_at(now)
+    }
+
+    /// `frecency_score` against a fixed `now`, so sorting many results reads
+    /// the clock once.
+    pub fn frecency_score_at(&self, now: i64) -> f64 {
+        if self.open_count == 0 {
+            return 0.0;
+        }
 
         let hours_ago = (now - self.last_opened) as f64 / 3600.0;
         let recency_weight = if hours_ago < 1.0 {
@@ -115,6 +122,12 @@ pub struct SearchAllResult {
     pub mtime: i64,
     pub size: u64,
     pub bookmark: String,
+}
+
+/// Files a query could match: every indexed file, or the ids its trigrams allow.
+enum Candidates {
+    All,
+    Ids(Vec<u32>),
 }
 
 pub struct TrigramIndex {
@@ -281,10 +294,16 @@ impl TrigramIndex {
     }
 
     /// Get candidate file IDs from trigram intersection
-    fn get_candidates(&self, query: &ParsedQuery) -> HashSet<u32> {
+    fn get_candidates(&self, query: &ParsedQuery) -> Candidates {
         match &query.mode {
-            QueryMode::Substring(q) => {
-                let trigrams = Self::extract_trigrams(&q.to_lowercase());
+            QueryMode::Substring(_) => {
+                // Every word must appear, so all their trigrams intersect
+                let mut trigrams: Vec<[u8; 3]> = query
+                    .search_words()
+                    .flat_map(Self::extract_trigrams)
+                    .collect();
+                trigrams.sort_unstable();
+                trigrams.dedup();
                 self.intersect_trigrams(&trigrams)
             }
             QueryMode::Regex(re) => {
@@ -292,8 +311,8 @@ impl TrigramIndex {
                 let pattern = re.as_str();
                 let literals = extract_regex_literals(pattern);
                 if literals.is_empty() {
-                    // No literals — scan all files
-                    self.files.keys().copied().collect()
+                    // No literals - scan all files
+                    Candidates::All
                 } else {
                     // Use longest literal for trigram narrowing
                     let best = literals.iter().max_by_key(|s| s.len()).unwrap();
@@ -303,7 +322,7 @@ impl TrigramIndex {
             }
             QueryMode::Glob(_) => {
                 // Glob patterns are hard to extract trigrams from; scan all
-                self.files.keys().copied().collect()
+                Candidates::All
             }
             QueryMode::Fuzzy {
                 query,
@@ -317,7 +336,7 @@ impl TrigramIndex {
                 // If query is short or has few trigrams, scan all files
                 // (Levenshtein will filter properly)
                 if query.len() < 5 || trigrams.len() < 2 || *max_distance >= 2 {
-                    return self.files.keys().copied().collect();
+                    return Candidates::All;
                 }
 
                 // For longer queries with low edit distance, use partial trigram matching
@@ -332,55 +351,52 @@ impl TrigramIndex {
 
                 if candidates.is_empty() {
                     // Fallback to scanning all if no trigram matches
-                    self.files.keys().copied().collect()
+                    Candidates::All
                 } else {
-                    candidates
+                    Candidates::Ids(candidates.into_iter().collect())
                 }
             }
         }
     }
 
-    /// Intersect posting lists for given trigrams
-    fn intersect_trigrams(&self, trigrams: &[[u8; 3]]) -> HashSet<u32> {
+    /// Intersect posting lists for given trigrams. Walks the shortest list and
+    /// keeps the ids every other list contains, so a common trigram costs a
+    /// lookup per candidate rather than a copy of its whole list.
+    fn intersect_trigrams(&self, trigrams: &[[u8; 3]]) -> Candidates {
         if trigrams.is_empty() {
-            return self.files.keys().copied().collect();
+            return Candidates::All;
         }
-
-        let mut iter = trigrams.iter();
-        let first = iter.next().unwrap();
-        let mut candidates = self.trigrams.get(first).cloned().unwrap_or_default();
-
-        for trigram in iter {
-            if let Some(set) = self.trigrams.get(trigram) {
-                candidates = candidates.intersection(set).copied().collect();
-            } else {
-                return HashSet::new();
-            }
-            if candidates.is_empty() {
-                return HashSet::new();
+        let mut lists: Vec<&HashSet<u32>> = Vec::with_capacity(trigrams.len());
+        for trigram in trigrams {
+            match self.trigrams.get(trigram) {
+                Some(list) => lists.push(list),
+                None => return Candidates::Ids(Vec::new()),
             }
         }
-
-        candidates
+        lists.sort_by_key(|list| list.len());
+        let (shortest, rest) = lists.split_first().unwrap();
+        Candidates::Ids(
+            shortest
+                .iter()
+                .copied()
+                .filter(|id| rest.iter().all(|list| list.contains(id)))
+                .collect(),
+        )
     }
 
-    /// Check if a path matches the query
+    /// Check if a path matches the query: its mode, then its `!words`
     fn matches_query(&self, path: &str, query: &ParsedQuery) -> bool {
+        self.mode_matches(path, query) && !query.is_excluded(path)
+    }
+
+    fn mode_matches(&self, path: &str, query: &ParsedQuery) -> bool {
         // Check path segments first (for path-aware search like "src/config")
         if !query.matches_path_segments(path) {
             return false;
         }
 
         match &query.mode {
-            QueryMode::Substring(q) => {
-                if q.is_empty() {
-                    return true;
-                }
-                query
-                    .substring_haystack(path)
-                    .to_lowercase()
-                    .contains(&q.to_lowercase())
-            }
+            QueryMode::Substring(_) => query.substring_matches(path),
             QueryMode::Regex(re) => re.is_match(path),
             QueryMode::Glob(matcher) => {
                 // Match against filename
@@ -451,76 +467,22 @@ impl TrigramIndex {
 
     /// Search for files matching the query within a single bookmark
     pub fn search(&self, query: &ParsedQuery, bookmark_path: &str) -> Vec<SearchResult> {
-        let candidates = self.get_candidates(query);
-
-        let mut results: Vec<SearchResult> = candidates
+        // Must be under the bookmark path, with a path-boundary check so
+        // "/mnt/data" cannot leak in "/mnt/database" entries. An empty
+        // bookmark path means no restriction.
+        let mut matches = self.matching_entries(query, |entry| {
+            bookmark_path.is_empty() || path_under_root(&entry.path, bookmark_path)
+        });
+        self.keep_top(&mut matches, query.sort_order);
+        matches
             .into_iter()
-            .filter_map(|id| self.files.get(&id))
-            .filter(|entry| {
-                // Must be under the bookmark path, with a path-boundary check
-                // so "/mnt/data" cannot leak in "/mnt/database" entries.
-                // An empty bookmark path means no restriction.
-                if !bookmark_path.is_empty() && !path_under_root(&entry.path, bookmark_path) {
-                    return false;
-                }
-
-                // File type mode filter
-                match query.file_type_mode {
-                    FileTypeMode::All => {}
-                    FileTypeMode::GotoDir => {
-                        if !entry.is_dir {
-                            return false;
-                        }
-                    }
-                    FileTypeMode::GotoFile => {
-                        if entry.is_dir {
-                            return false;
-                        }
-                    }
-                    FileTypeMode::Edit => {
-                        if entry.is_dir {
-                            return false;
-                        }
-                        if let Some(ext) =
-                            Path::new(&entry.path).extension().and_then(|e| e.to_str())
-                        {
-                            if BINARY_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
-                                return false;
-                            }
-                        }
-                    }
-                }
-
-                // Extension filter
-                if let Some(ref ext_filter) = query.extension_filter {
-                    if let Some(ext) = Path::new(&entry.path).extension().and_then(|e| e.to_str()) {
-                        if ext.to_lowercase() != ext_filter.to_lowercase() {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-
-                // Verify actual match (trigrams can produce false positives)
-                self.matches_query(&entry.path, query)
-            })
             .map(|entry| SearchResult {
                 path: entry.path.clone(),
                 is_dir: entry.is_dir,
                 mtime: entry.mtime,
                 size: entry.size,
             })
-            .collect();
-
-        sort_results(
-            &mut results,
-            query.sort_order,
-            &self.path_to_id,
-            &self.access_data,
-        );
-        results.truncate(self.max_results);
-        results
+            .collect()
     }
 
     /// Search all bookmarks at once (faster than multiple searches)
@@ -529,6 +491,15 @@ impl TrigramIndex {
         query: &ParsedQuery,
         bookmark_paths: &[String],
     ) -> Vec<SearchAllResult> {
+        self.search_all_counted(query, bookmark_paths).0
+    }
+
+    /// `search_all`, plus how many paths matched before the result cap.
+    pub fn search_all_counted(
+        &self,
+        query: &ParsedQuery,
+        bookmark_paths: &[String],
+    ) -> (Vec<SearchAllResult>, usize) {
         let bookmark_map: HashMap<&str, &str> = self
             .bookmarks
             .iter()
@@ -541,82 +512,115 @@ impl TrigramIndex {
             bookmark_paths.iter().map(|s| s.as_str()).collect()
         };
 
-        let candidates = self.get_candidates(query);
-        debug!("search_all: {} candidates from trigrams", candidates.len());
+        // Find which bookmark a file belongs to (boundary-aware, so
+        // "/mnt/database" is not attributed to bookmark "/mnt/data")
+        let bookmark_of = |path: &str| {
+            search_paths
+                .iter()
+                .find(|&&bp| path_under_root(path, bp))
+                .and_then(|bp| bookmark_map.get(bp).copied())
+        };
 
-        let mut results: Vec<SearchAllResult> = candidates
+        let mut matches = self.matching_entries(query, |entry| bookmark_of(&entry.path).is_some());
+        let total = matches.len();
+        self.keep_top(&mut matches, query.sort_order);
+        let results = matches
             .into_iter()
-            .filter_map(|id| self.files.get(&id))
-            .filter_map(|entry| {
-                // Find which bookmark this file belongs to (boundary-aware,
-                // so "/mnt/database" is not attributed to bookmark "/mnt/data")
-                let bookmark_name = search_paths
-                    .iter()
-                    .find(|&&bp| path_under_root(&entry.path, bp))
-                    .and_then(|bp| bookmark_map.get(bp).copied())?;
-
-                // File type mode filter
-                match query.file_type_mode {
-                    FileTypeMode::All => {}
-                    FileTypeMode::GotoDir => {
-                        if !entry.is_dir {
-                            return None;
-                        }
-                    }
-                    FileTypeMode::GotoFile => {
-                        if entry.is_dir {
-                            return None;
-                        }
-                    }
-                    FileTypeMode::Edit => {
-                        if entry.is_dir {
-                            return None;
-                        }
-                        if let Some(ext) =
-                            Path::new(&entry.path).extension().and_then(|e| e.to_str())
-                        {
-                            if BINARY_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
-                                return None;
-                            }
-                        }
-                    }
-                }
-
-                // Extension filter
-                if let Some(ref ext_filter) = query.extension_filter {
-                    {
-                        let ext = Path::new(&entry.path)
-                            .extension()
-                            .and_then(|e| e.to_str())?;
-                        if ext.to_lowercase() != ext_filter.to_lowercase() {
-                            return None;
-                        }
-                    }
-                }
-
-                // Verify actual match
-                if !self.matches_query(&entry.path, query) {
-                    return None;
-                }
-
-                Some(SearchAllResult {
-                    path: entry.path.clone(),
-                    is_dir: entry.is_dir,
-                    mtime: entry.mtime,
-                    size: entry.size,
-                    bookmark: bookmark_name.to_string(),
-                })
+            .map(|entry| SearchAllResult {
+                path: entry.path.clone(),
+                is_dir: entry.is_dir,
+                mtime: entry.mtime,
+                size: entry.size,
+                bookmark: bookmark_of(&entry.path).unwrap_or_default().to_string(),
             })
             .collect();
+        (results, total)
+    }
 
-        sort_all_results(
-            &mut results,
-            query.sort_order,
-            &self.path_to_id,
-            &self.access_data,
-        );
-        results.truncate(self.max_results);
-        results
+    /// Every indexed entry the query matches and `keep` accepts. The checks
+    /// run in parallel across all cores, which matters when there are no
+    /// trigrams to narrow with (`ab`, `*.rs` alone) and every path is checked.
+    fn matching_entries<'a>(
+        &'a self,
+        query: &ParsedQuery,
+        keep: impl Fn(&FileEntry) -> bool + Sync,
+    ) -> Vec<&'a FileEntry> {
+        let accept = |entry: &&FileEntry| keep(entry) && self.entry_matches(entry, query);
+        match self.get_candidates(query) {
+            Candidates::All => self
+                .files
+                .par_iter()
+                .map(|(_, e)| e)
+                .filter(accept)
+                .collect(),
+            Candidates::Ids(ids) => {
+                debug!("search: {} candidates from trigrams", ids.len());
+                ids.par_iter()
+                    .filter_map(|id| self.files.get(id))
+                    .filter(accept)
+                    .collect()
+            }
+        }
+    }
+
+    /// File type, extension, size, and date filters, then the text match.
+    fn entry_matches(&self, entry: &FileEntry, query: &ParsedQuery) -> bool {
+        match query.file_type_mode {
+            FileTypeMode::All => {}
+            FileTypeMode::GotoDir => {
+                if !entry.is_dir {
+                    return false;
+                }
+            }
+            FileTypeMode::GotoFile => {
+                if entry.is_dir {
+                    return false;
+                }
+            }
+            FileTypeMode::Edit => {
+                if entry.is_dir {
+                    return false;
+                }
+                if let Some(ext) = Path::new(&entry.path).extension().and_then(|e| e.to_str()) {
+                    if BINARY_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        if let Some(ref ext_filter) = query.extension_filter {
+            match Path::new(&entry.path).extension().and_then(|e| e.to_str()) {
+                Some(ext) if ext.eq_ignore_ascii_case(ext_filter) => {}
+                _ => return false,
+            }
+        }
+
+        query.meta_matches(entry.is_dir, entry.size, entry.mtime)
+            && self.matches_query(&entry.path, query)
+    }
+
+    /// Sort `entries` by `order` and keep the first `max_results`. A linear
+    /// selection picks those first, so a query matching a million paths does
+    /// not pay for sorting all of them. Ties fall back to the path, which keeps
+    /// the order the same from one search to the next.
+    fn keep_top(&self, entries: &mut Vec<&FileEntry>, order: SortOrder) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        let score = |e: &FileEntry| {
+            self.access_data
+                .get(&e.id)
+                .map(|a| a.frecency_score_at(now))
+                .unwrap_or(0.0)
+        };
+        let cmp = |a: &&FileEntry, b: &&FileEntry| compare_entries(a, b, order, &score);
+        if self.max_results > 0 && entries.len() > self.max_results {
+            entries.select_nth_unstable_by(self.max_results - 1, cmp);
+            entries.truncate(self.max_results);
+        }
+        entries.par_sort_unstable_by(cmp);
     }
 
     pub fn file_count(&self) -> usize {
@@ -628,86 +632,25 @@ impl TrigramIndex {
     }
 }
 
-/// Sort SearchResult by the given order
-fn sort_results(
-    results: &mut [SearchResult],
+/// Order two entries by `order`, then by path.
+fn compare_entries(
+    a: &FileEntry,
+    b: &FileEntry,
     order: SortOrder,
-    path_to_id: &HashMap<String, u32>,
-    access_data: &HashMap<u32, AccessInfo>,
-) {
-    match order {
-        SortOrder::MtimeDesc => results.sort_by_key(|r| std::cmp::Reverse(r.mtime)),
-        SortOrder::MtimeAsc => results.sort_by_key(|a| a.mtime),
-        SortOrder::NameAsc => results.sort_by(|a, b| {
-            let na = Path::new(&a.path).file_name().unwrap_or_default();
-            let nb = Path::new(&b.path).file_name().unwrap_or_default();
-            na.cmp(nb)
-        }),
-        SortOrder::NameDesc => results.sort_by(|a, b| {
-            let na = Path::new(&a.path).file_name().unwrap_or_default();
-            let nb = Path::new(&b.path).file_name().unwrap_or_default();
-            nb.cmp(na)
-        }),
-        SortOrder::SizeDesc => results.sort_by_key(|r| std::cmp::Reverse(r.size)),
-        SortOrder::SizeAsc => results.sort_by_key(|a| a.size),
-        SortOrder::PathAsc => results.sort_by(|a, b| a.path.cmp(&b.path)),
-        SortOrder::Frecency => results.sort_by(|a, b| {
-            let score_a = path_to_id
-                .get(&a.path)
-                .and_then(|id| access_data.get(id))
-                .map(|ai| ai.frecency_score())
-                .unwrap_or(0.0);
-            let score_b = path_to_id
-                .get(&b.path)
-                .and_then(|id| access_data.get(id))
-                .map(|ai| ai.frecency_score())
-                .unwrap_or(0.0);
-            score_b
-                .partial_cmp(&score_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }),
-    }
-}
-
-/// Sort SearchAllResult by the given order
-fn sort_all_results(
-    results: &mut [SearchAllResult],
-    order: SortOrder,
-    path_to_id: &HashMap<String, u32>,
-    access_data: &HashMap<u32, AccessInfo>,
-) {
-    match order {
-        SortOrder::MtimeDesc => results.sort_by_key(|r| std::cmp::Reverse(r.mtime)),
-        SortOrder::MtimeAsc => results.sort_by_key(|a| a.mtime),
-        SortOrder::NameAsc => results.sort_by(|a, b| {
-            let na = Path::new(&a.path).file_name().unwrap_or_default();
-            let nb = Path::new(&b.path).file_name().unwrap_or_default();
-            na.cmp(nb)
-        }),
-        SortOrder::NameDesc => results.sort_by(|a, b| {
-            let na = Path::new(&a.path).file_name().unwrap_or_default();
-            let nb = Path::new(&b.path).file_name().unwrap_or_default();
-            nb.cmp(na)
-        }),
-        SortOrder::SizeDesc => results.sort_by_key(|r| std::cmp::Reverse(r.size)),
-        SortOrder::SizeAsc => results.sort_by_key(|a| a.size),
-        SortOrder::PathAsc => results.sort_by(|a, b| a.path.cmp(&b.path)),
-        SortOrder::Frecency => results.sort_by(|a, b| {
-            let score_a = path_to_id
-                .get(&a.path)
-                .and_then(|id| access_data.get(id))
-                .map(|ai| ai.frecency_score())
-                .unwrap_or(0.0);
-            let score_b = path_to_id
-                .get(&b.path)
-                .and_then(|id| access_data.get(id))
-                .map(|ai| ai.frecency_score())
-                .unwrap_or(0.0);
-            score_b
-                .partial_cmp(&score_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }),
-    }
+    score: &impl Fn(&FileEntry) -> f64,
+) -> Ordering {
+    let name = |e: &FileEntry| Path::new(&e.path).file_name().map(|n| n.to_os_string());
+    let primary = match order {
+        SortOrder::MtimeDesc => b.mtime.cmp(&a.mtime),
+        SortOrder::MtimeAsc => a.mtime.cmp(&b.mtime),
+        SortOrder::NameAsc => name(a).cmp(&name(b)),
+        SortOrder::NameDesc => name(b).cmp(&name(a)),
+        SortOrder::SizeDesc => b.size.cmp(&a.size),
+        SortOrder::SizeAsc => a.size.cmp(&b.size),
+        SortOrder::PathAsc => Ordering::Equal,
+        SortOrder::Frecency => score(b).partial_cmp(&score(a)).unwrap_or(Ordering::Equal),
+    };
+    primary.then_with(|| a.path.cmp(&b.path))
 }
 
 /// Extract literal substrings from a regex pattern for trigram narrowing.
@@ -795,6 +738,7 @@ mod tests {
             file_type_mode: FileTypeMode::All,
             sort_order: SortOrder::MtimeDesc,
             path_segments: None,
+            ..ParsedQuery::parse("", SortOrder::MtimeDesc)
         };
 
         let results = index.search(&query, "/tmp/test");
@@ -832,6 +776,7 @@ mod tests {
             file_type_mode: FileTypeMode::All,
             sort_order: SortOrder::NameAsc,
             path_segments: None,
+            ..ParsedQuery::parse("", SortOrder::MtimeDesc)
         };
         let results = index.search(&query, "/tmp");
         assert_eq!(results[0].path, "/tmp/aaa.txt");
@@ -984,5 +929,114 @@ mod tests {
         // One typo away from "beta"
         assert_eq!(found("~betta"), ["beta-report.txt"]);
         assert!(found("~zzzzzz").is_empty());
+    }
+
+    /// Media files with sizes and dates for the filter and word tests.
+    fn media_fixture() -> TrigramIndex {
+        let mut index = TrigramIndex::new();
+        index.bookmarks.push(Bookmark {
+            name: "nas".to_string(),
+            path: "/nas".to_string(),
+            is_network: true,
+        });
+        let gib = 1u64 << 30;
+        index.add(
+            "/nas/movies/All That's Left of You (2025)".to_string(),
+            true,
+            500,
+            0,
+        );
+        index.add(
+            "/nas/movies/All That's Left of You (2025)/movie.mkv".to_string(),
+            false,
+            1000,
+            10 * gib,
+        );
+        index.add(
+            "/nas/movies/All That's Left of You (2025)/Trailer.mkv".to_string(),
+            false,
+            1000,
+            gib / 2,
+        );
+        index.add(
+            "/nas/movies/Left Behind (2014)/movie.mkv".to_string(),
+            false,
+            2000,
+            3 * gib,
+        );
+        index.add("/nas/music/left.flac".to_string(), false, 3000, 40 << 20);
+        index
+    }
+
+    fn found(index: &TrigramIndex, raw: &str) -> Vec<String> {
+        let q = ParsedQuery::parse(raw, SortOrder::PathAsc);
+        index
+            .search_all(&q, &[])
+            .into_iter()
+            .map(|r| r.path)
+            .collect()
+    }
+
+    #[test]
+    fn words_exclusions_and_filters_combine() {
+        let index = media_fixture();
+        // Words in any order, across folder and file names
+        assert_eq!(found(&index, "you mkv left").len(), 2);
+        // Excluding a word drops the trailer
+        assert_eq!(
+            found(&index, "you mkv !trailer"),
+            ["/nas/movies/All That's Left of You (2025)/movie.mkv"]
+        );
+        // Size: only files, never the folder
+        assert_eq!(found(&index, "size:>1G").len(), 2);
+        assert_eq!(found(&index, "left size:<100M"), ["/nas/music/left.flac"]);
+        // Date: everything modified on or after the 1000 s mark
+        let q = ParsedQuery {
+            mtime_filter: Some(super::super::query::Interval {
+                start: Some(1000),
+                end: None,
+            }),
+            ..ParsedQuery::parse("", SortOrder::PathAsc)
+        };
+        assert_eq!(index.search_all(&q, &[]).len(), 4);
+    }
+
+    #[test]
+    fn capped_results_are_the_top_of_the_full_order_and_report_the_total() {
+        let mut index = TrigramIndex::new();
+        index.bookmarks.push(Bookmark {
+            name: "t".to_string(),
+            path: "/t".to_string(),
+            is_network: false,
+        });
+        for i in 0..200u64 {
+            // Sizes deliberately out of order relative to insertion
+            index.add(
+                format!("/t/report-{i:03}.txt"),
+                false,
+                i as i64,
+                (i * 7919) % 1000,
+            );
+        }
+        let q = ParsedQuery::parse("report", SortOrder::SizeDesc);
+        let full: Vec<String> = index
+            .search_all(&q, &[])
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
+
+        index.max_results = 10;
+        let (top, total) = index.search_all_counted(&q, &[]);
+        assert_eq!(total, 200);
+        let top: Vec<String> = top.into_iter().map(|r| r.path).collect();
+        assert_eq!(top, full[..10].to_vec());
+    }
+
+    #[test]
+    fn queries_without_trigrams_scan_every_path() {
+        let index = media_fixture();
+        // Two letters have no trigram to narrow with
+        assert_eq!(found(&index, "mo").len(), 4);
+        assert_eq!(found(&index, "*.flac"), ["/nas/music/left.flac"]);
     }
 }

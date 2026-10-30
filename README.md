@@ -7,9 +7,10 @@ index of every path under your bookmarks and searches it as you type.
 
 ## Features
 
-- **Trigram-indexed search** - On a 1.4M-file index (i7-13700K), specific queries return in a few milliseconds and very common words like `config` in tens of milliseconds; a query with no three-character run (`ab`, or `*.rs` alone) checks every path, about 0.4 s. When a keystroke only extends the query and the previous results were complete (under the result cap), archnav filters them instead of searching again. `archnav --benchmark` measures your own index
+- **Trigram-indexed search** - On a 1.4M-file index (i7-13700K, 24 threads), most queries take under a millisecond, very common words like `config` (146,630 matches) about 13 ms, and a query with no three-character run (`ab`, or `*.rs` alone) about 20 ms, since it checks every path on all cores. When a keystroke only extends the query and the previous results were complete, archnav filters them instead of searching again. `archnav --benchmark` measures your own index
+- **Words in any order** - `left all` finds "All That's Left of You"; `!trailer` leaves out paths containing a word; size and date filters such as `size:>1G` or `dm:thisweek`
 - **Previews** - Text, rendered Markdown, images, PDF and audio/video metadata, archive contents
-- **Unified search** - Search all bookmarks simultaneously
+- **Unified search** - Search all bookmarks simultaneously; the status bar shows how many paths matched when more than the result cap (500 by default) did
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
 - **Results table** - File-type icons from the icon theme, click a header to sort, drag its edge to resize, right-click it to show or hide Path, Size, and Modified; widths and hidden columns are remembered. Click a path to open its folder
@@ -83,7 +84,11 @@ This installs `archnav` to `/usr/bin/`, registers the desktop file, and ships th
 
 ### Search Syntax
 
-- **Simple**: `query` - substring search across all bookmarks
+- **Words**: `left all` - every word must appear somewhere in the path, in any order (case-insensitive)
+- **Phrase**: `"all that's"` - quotes keep words together, in order
+- **Exclude**: `movies !trailer` - leave out paths containing a word (`!"bonus disc"` for a phrase)
+- **Size**: `size:>1G`, `size:<=500k`, `size:100M..1G`, `size:4096` - binary units k, m, g, t; folders never match
+- **Date modified**: `dm:today`, `dm:yesterday`, `dm:thisweek`, `dm:lastmonth`, `dm:thisyear`, `dm:last7days`, `dm:last24h`, `dm:2026`, `dm:2026-10`, `dm:2026-10-29`; with `>`, `>=`, `<`, `<=`, or `dm:2026-01..2026-03` (weeks start on Monday, local time)
 - **Extension filter**: `*.rs query` - filter by file extension (position-independent)
 - **Regex**: `/^README` - regex search (prefix with `/`)
 - **Glob**: `foo*bar` - glob pattern (contains `*` or `?`)

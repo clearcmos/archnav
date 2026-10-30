@@ -42,6 +42,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Paths and system
 dirs = "5"
 libc = "0.2"
+rayon = "1"
 
 [build-dependencies]
 cxx-qt-build = { version = "0.9", features = ["link_qt_object_files"] }

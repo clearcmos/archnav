@@ -480,6 +480,22 @@ ApplicationWindow {
                 // Separator
                 Item { Layout.columnSpan: 2; Layout.preferredHeight: Style.marginSmall }
 
+                // Search
+                Label { text: "a b"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "All words, in any order (\"a b\" for a phrase)"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "!word"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Leave out paths containing a word"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "size:>1G"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Size: >, <, =, or 100M..1G; k, m, g, t"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "dm:thisweek"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Modified: today, last7days, 2026-10, >2025"; font.pointSize: Style.fontSizeNormal }
+
+                // Separator
+                Item { Layout.columnSpan: 2; Layout.preferredHeight: Style.marginSmall }
+
                 // View
                 Label { text: "Ctrl+P"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Toggle preview pane"; font.pointSize: Style.fontSizeNormal }

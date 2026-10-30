@@ -113,6 +113,11 @@ fn main() {
             "xyzzyplugh",
             // 2-char (below trigram threshold, falls back to scan)
             "ab",
+            // Words in any order, exclusions, and filters
+            "report pdf",
+            "config !test",
+            "size:>1G",
+            "dm:thisweek",
         ];
 
         println!("╔══════════════════════════════════════════════════════════════════════╗");
@@ -129,7 +134,7 @@ fn main() {
         println!();
         println!(
             "{:<25} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
-            "Query", "Min", "Median", "P95", "P99", "Max", "Results"
+            "Query", "Min", "Median", "P95", "P99", "Max", "Matches"
         );
         println!("{}", "─".repeat(83));
 
@@ -145,9 +150,9 @@ fn main() {
             for _ in 0..iterations {
                 // Clear search cache between runs for honest measurement
                 engine.clear_search_cache();
-                let (results, elapsed) = engine.search(query, 0);
+                let (_, total, elapsed) = engine.search(query, 0);
                 times.push(elapsed);
-                result_count = results.len();
+                result_count = total;
             }
 
             times.sort();

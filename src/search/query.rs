@@ -103,6 +103,20 @@ pub enum FileTypeMode {
     GotoDir,
 }
 
+/// A half-open range `[start, end)` used by the `size:` and `dm:` filters;
+/// a missing end is unbounded.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Interval {
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+impl Interval {
+    pub fn contains(&self, value: i64) -> bool {
+        self.start.is_none_or(|s| value >= s) && self.end.is_none_or(|e| value < e)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ParsedQuery {
     pub mode: QueryMode,
@@ -111,9 +125,321 @@ pub struct ParsedQuery {
     pub sort_order: SortOrder,
     /// Path segments for path-aware search (e.g., "src/config" -> ["src", "config"])
     pub path_segments: Option<Vec<String>>,
+    /// Further words a plain search requires, in any order (lowercase). The
+    /// longest word is in `mode` instead, where it drives the trigram lookup.
+    pub extra_terms: Vec<String>,
+    /// Words written as `!word`: a match contains none of them (lowercase).
+    pub excluded_terms: Vec<String>,
+    /// `size:` filter in bytes; directories never match it.
+    pub size_filter: Option<Interval>,
+    /// `dm:` filter on the modification time, Unix seconds.
+    pub mtime_filter: Option<Interval>,
+}
+
+/// One whitespace-separated piece of a query. Double quotes keep spaces inside
+/// a single word (`"all that"`); a leading `!` marks a word to exclude.
+struct Token {
+    text: String,
+    quoted: bool,
+    negated: bool,
+}
+
+fn tokenize(input: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let mut text = String::new();
+    let (mut started, mut quoted, mut negated, mut in_quote) = (false, false, false, false);
+    for c in input.chars() {
+        if in_quote {
+            if c == '"' {
+                in_quote = false;
+            } else {
+                text.push(c);
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_quote = true;
+                quoted = true;
+                started = true;
+            }
+            // Only a leading `!` negates; "wow!" stays a literal word
+            '!' if !started => {
+                negated = true;
+                started = true;
+            }
+            c if c.is_whitespace() => {
+                if started {
+                    tokens.push(Token {
+                        text: std::mem::take(&mut text),
+                        quoted,
+                        negated,
+                    });
+                }
+                (started, quoted, negated) = (false, false, false);
+            }
+            c => {
+                text.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        tokens.push(Token {
+            text,
+            quoted,
+            negated,
+        });
+    }
+    tokens
+}
+
+fn is_extension_token(token: &str) -> bool {
+    token.starts_with("*.") && token.len() > 2
+}
+
+/// A `size:` or `dm:` token. The interval is None when the value does not
+/// parse yet (mid-typing, such as `size:>`), so the filter is simply ignored.
+enum FilterToken {
+    Size(Option<Interval>),
+    Modified(Option<Interval>),
+}
+
+fn filter_token(token: &str, now: i64) -> Option<FilterToken> {
+    let (key, value) = token.split_once(':')?;
+    match key.to_ascii_lowercase().as_str() {
+        "size" => Some(FilterToken::Size(parse_comparison(value, parse_size_term))),
+        "dm" | "datemodified" => Some(FilterToken::Modified(parse_comparison(value, |t| {
+            parse_date_term(t, now)
+        }))),
+        _ => None,
+    }
+}
+
+/// Apply a comparison to a value whose terms each name an interval:
+/// `x` or `=x` is the interval itself, `>x` starts after it, `>=x` starts at
+/// it, `<x` ends before it, `<=x` ends after it, and `a..b` spans from the
+/// start of `a` to the end of `b`.
+fn parse_comparison(value: &str, term: impl Fn(&str) -> Option<Interval>) -> Option<Interval> {
+    let value = value.trim();
+    if let Some((a, b)) = value.split_once("..") {
+        return Some(Interval {
+            start: term(a)?.start,
+            end: term(b)?.end,
+        });
+    }
+    let (op, rest) = [">=", "<=", ">", "<", "="]
+        .iter()
+        .find_map(|op| value.strip_prefix(op).map(|rest| (*op, rest)))
+        .unwrap_or(("=", value));
+    let t = term(rest)?;
+    Some(match op {
+        ">" => Interval {
+            start: t.end,
+            end: None,
+        },
+        ">=" => Interval {
+            start: t.start,
+            end: None,
+        },
+        "<" => Interval {
+            start: None,
+            end: t.start,
+        },
+        "<=" => Interval {
+            start: None,
+            end: t.end,
+        },
+        _ => t,
+    })
+}
+
+/// A size such as `100`, `500k`, `1.5G`, or `2tb` (binary units, matching the
+/// KiB/MiB/GiB shown in the results), as the one-byte interval it names.
+fn parse_size_term(term: &str) -> Option<Interval> {
+    let term = term.trim().to_ascii_lowercase();
+    let split = term
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(term.len());
+    let (number, unit) = term.split_at(split);
+    let number: f64 = number.parse().ok()?;
+    let shift = match unit {
+        "" | "b" => 0,
+        "k" | "kb" | "kib" => 10,
+        "m" | "mb" | "mib" => 20,
+        "g" | "gb" | "gib" => 30,
+        "t" | "tb" | "tib" => 40,
+        _ => return None,
+    };
+    let bytes = (number * (1u64 << shift) as f64).round() as i64;
+    Some(Interval {
+        start: Some(bytes),
+        end: Some(bytes + 1),
+    })
+}
+
+/// Local calendar fields of a Unix time.
+fn local_tm(time: i64) -> libc::tm {
+    let t = time as libc::time_t;
+    // SAFETY: localtime_r only writes the tm it is given.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&t, &mut tm);
+        tm
+    }
+}
+
+/// Unix time of a local date and time. Out-of-range fields roll over the
+/// way mktime normalizes them, so day 0 is the last day of the month before.
+fn local_time(year: i32, month0: i32, day: i32, hour: i32, min: i32, sec: i32) -> i64 {
+    // SAFETY: mktime reads and normalizes the tm it is given.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        tm.tm_year = year - 1900;
+        tm.tm_mon = month0;
+        tm.tm_mday = day;
+        tm.tm_hour = hour;
+        tm.tm_min = min;
+        tm.tm_sec = sec;
+        tm.tm_isdst = -1;
+        libc::mktime(&mut tm) as i64
+    }
+}
+
+fn day_span(year: i32, month0: i32, day: i32) -> Interval {
+    Interval {
+        start: Some(local_time(year, month0, day, 0, 0, 0)),
+        end: Some(local_time(year, month0, day + 1, 0, 0, 0)),
+    }
+}
+
+/// A date term as an interval of local time: `today`, `yesterday`,
+/// `thisweek`/`lastweek` (weeks start on Monday), `thismonth`/`lastmonth`,
+/// `thisyear`/`lastyear`, `lastNunits` such as `last7days` or `last24h`
+/// (up to `now`), or a calendar date `2026`, `2026-10`, `2026-10-29`.
+fn parse_date_term(term: &str, now: i64) -> Option<Interval> {
+    let term = term.trim().to_ascii_lowercase();
+    let tm = local_tm(now);
+    let (y, m, d) = (tm.tm_year + 1900, tm.tm_mon, tm.tm_mday);
+    let week_start = d - (tm.tm_wday + 6) % 7;
+    let span = |start: i64, end: i64| {
+        Some(Interval {
+            start: Some(start),
+            end: Some(end),
+        })
+    };
+    match term.as_str() {
+        "today" => return Some(day_span(y, m, d)),
+        "yesterday" => return Some(day_span(y, m, d - 1)),
+        "thisweek" => {
+            return span(
+                local_time(y, m, week_start, 0, 0, 0),
+                local_time(y, m, week_start + 7, 0, 0, 0),
+            )
+        }
+        "lastweek" => {
+            return span(
+                local_time(y, m, week_start - 7, 0, 0, 0),
+                local_time(y, m, week_start, 0, 0, 0),
+            )
+        }
+        "thismonth" => {
+            return span(
+                local_time(y, m, 1, 0, 0, 0),
+                local_time(y, m + 1, 1, 0, 0, 0),
+            )
+        }
+        "lastmonth" => {
+            return span(
+                local_time(y, m - 1, 1, 0, 0, 0),
+                local_time(y, m, 1, 0, 0, 0),
+            )
+        }
+        "thisyear" => {
+            return span(
+                local_time(y, 0, 1, 0, 0, 0),
+                local_time(y + 1, 0, 1, 0, 0, 0),
+            )
+        }
+        "lastyear" => {
+            return span(
+                local_time(y - 1, 0, 1, 0, 0, 0),
+                local_time(y, 0, 1, 0, 0, 0),
+            )
+        }
+        _ => {}
+    }
+
+    if let Some(rest) = term.strip_prefix("last") {
+        let split = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        let (count, unit) = rest.split_at(split);
+        let n: i32 = count.parse().ok()?;
+        let (h, mi, s) = (tm.tm_hour, tm.tm_min, tm.tm_sec);
+        let start = match unit {
+            "h" | "hour" | "hours" => now - i64::from(n) * 3600,
+            "d" | "day" | "days" => local_time(y, m, d - n, h, mi, s),
+            "w" | "week" | "weeks" => local_time(y, m, d - 7 * n, h, mi, s),
+            "month" | "months" => local_time(y, m - n, d, h, mi, s),
+            "y" | "year" | "years" => local_time(y - n, m, d, h, mi, s),
+            _ => return None,
+        };
+        return Some(Interval {
+            start: Some(start),
+            end: None,
+        });
+    }
+
+    let parts: Vec<&str> = term.split('-').collect();
+    let num = |i: usize| parts.get(i).and_then(|p| p.parse::<i32>().ok());
+    let year = num(0).filter(|y| (1900..=9999).contains(y) && parts[0].len() == 4)?;
+    match parts.len() {
+        1 => span(
+            local_time(year, 0, 1, 0, 0, 0),
+            local_time(year + 1, 0, 1, 0, 0, 0),
+        ),
+        2 => {
+            let month = num(1).filter(|m| (1..=12).contains(m))?;
+            span(
+                local_time(year, month - 1, 1, 0, 0, 0),
+                local_time(year, month, 1, 0, 0, 0),
+            )
+        }
+        3 => {
+            let month = num(1).filter(|m| (1..=12).contains(m))?;
+            let day = num(2).filter(|d| (1..=31).contains(d))?;
+            Some(day_span(year, month - 1, day))
+        }
+        _ => None,
+    }
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 impl ParsedQuery {
+    /// Check a cached result against this query: the text match plus the
+    /// extension, size, and date filters.
+    pub fn matches_result(&self, path: &str, is_dir: bool, size: u64, mtime: i64) -> bool {
+        self.meta_matches(is_dir, size, mtime) && self.matches_path(path)
+    }
+
+    /// The `size:` and `dm:` filters. Directories have no indexed size, so a
+    /// size filter never matches one.
+    pub fn meta_matches(&self, is_dir: bool, size: u64, mtime: i64) -> bool {
+        if let Some(range) = self.size_filter {
+            if is_dir || !range.contains(size as i64) {
+                return false;
+            }
+        }
+        self.mtime_filter.is_none_or(|range| range.contains(mtime))
+    }
+
     /// Check if a path matches this query (for cache filtering).
     pub fn matches_path(&self, path: &str) -> bool {
         // Check extension filter first
@@ -136,15 +462,8 @@ impl ParsedQuery {
         }
 
         // Check query mode
-        match &self.mode {
-            QueryMode::Substring(q) => {
-                if q.is_empty() {
-                    return true;
-                }
-                self.substring_haystack(path)
-                    .to_lowercase()
-                    .contains(&q.to_lowercase())
-            }
+        let matched = match &self.mode {
+            QueryMode::Substring(_) => self.substring_matches(path),
             QueryMode::Regex(re) => re.is_match(path),
             QueryMode::Glob(matcher) => {
                 let filename = std::path::Path::new(path)
@@ -179,23 +498,93 @@ impl ParsedQuery {
 
                 levenshtein_bounded(query, name_without_ext, *max_distance).is_some()
             }
-        }
+        };
+        matched && !self.is_excluded(path)
     }
 
-    /// Parse a raw query string with optional extension filter.
+    /// The words a plain search requires: the one in `mode` and `extra_terms`.
+    pub fn search_words(&self) -> impl Iterator<Item = &str> {
+        let primary = match &self.mode {
+            QueryMode::Substring(word) if !word.is_empty() => Some(word.as_str()),
+            _ => None,
+        };
+        primary
+            .into_iter()
+            .chain(self.extra_terms.iter().map(String::as_str))
+    }
+
+    /// Whether `path` holds every search word, in any order (case-insensitive,
+    /// against the full path, or the folder name for `folder:`).
+    pub fn substring_matches(&self, path: &str) -> bool {
+        let mut words = self.search_words().peekable();
+        if words.peek().is_none() {
+            return true;
+        }
+        let haystack = self.substring_haystack(path).to_lowercase();
+        words.all(|word| haystack.contains(word))
+    }
+
+    /// Whether `path` holds any `!word` of the query.
+    pub fn is_excluded(&self, path: &str) -> bool {
+        if self.excluded_terms.is_empty() {
+            return false;
+        }
+        let haystack = self.substring_haystack(path).to_lowercase();
+        self.excluded_terms
+            .iter()
+            .any(|word| haystack.contains(word.as_str()))
+    }
+
+    /// Whether every match of `self` is also a match of `old`, so `old`'s
+    /// complete results can be filtered instead of searching again. Holds for
+    /// plain searches when each old word sits inside some new word, each old
+    /// `!word` contains some new one (excluding "ba" drops fewer paths than
+    /// excluding "b"), and every filter is unchanged.
+    pub fn narrows(&self, old: &ParsedQuery) -> bool {
+        if self.file_type_mode != old.file_type_mode
+            || self.extension_filter != old.extension_filter
+            || self.path_segments != old.path_segments
+            || self.size_filter != old.size_filter
+            || self.mtime_filter != old.mtime_filter
+        {
+            return false;
+        }
+        if !matches!(
+            (&self.mode, &old.mode),
+            (QueryMode::Substring(_), QueryMode::Substring(_))
+        ) {
+            return false;
+        }
+        let new_words: Vec<&str> = self.search_words().collect();
+        old.search_words()
+            .all(|o| new_words.iter().any(|n| n.contains(o)))
+            && old
+                .excluded_terms
+                .iter()
+                .all(|e| self.excluded_terms.iter().any(|n| e.contains(n.as_str())))
+    }
+
+    /// Parse a raw query string.
     ///
     /// Syntax:
-    ///   "query"                - substring search across all locations
+    ///   "left all"             - every word, in any order, anywhere in the path
+    ///   "\"all that\""         - quotes keep a phrase together
+    ///   "movies !trailer"      - `!word` excludes paths containing the word
     ///   "*.py query"           - filter by extension (position-independent)
-    ///   "query *.py"           - same as above
+    ///   "size:>1G"             - size filter: >, >=, <, <=, =, or a..b; k/m/g/t units
+    ///   "dm:thisweek"          - modified date: today, yesterday, this/last week,
+    ///                            month, year, lastNdays, or 2026 / 2026-10 / 2026-10-29
     ///   "/regex"               - regex search (prefix with /)
     ///   "foo*bar"              - glob pattern (contains * or ?)
+    ///   "~confg"               - fuzzy match on the file name
     ///   "src/config"           - path-aware search (matches "config" under "src")
     ///   "folder:movies"        - directories whose own name matches (not nested children)
     pub fn parse(raw: &str, sort_order: SortOrder) -> Self {
-        let mut extension_filter: Option<String> = None;
-        let mut path_segments: Option<Vec<String>> = None;
+        Self::parse_at(raw, sort_order, now_secs())
+    }
 
+    /// `parse` with the current time given, so relative dates are testable.
+    pub fn parse_at(raw: &str, sort_order: SortOrder, now: i64) -> Self {
         // Strip "folder:" prefix (case-insensitive, with optional whitespace after).
         // Restricts results to directories only. The is_char_boundary guard
         // matters: slicing at a fixed byte offset panics when that byte falls
@@ -215,94 +604,116 @@ impl ParsedQuery {
             (FileTypeMode::All, raw_trimmed)
         };
 
-        // Split into tokens and pull an extension filter from anywhere in the query
-        let mut query_tokens: Vec<&str> = Vec::new();
-        for token in raw_effective.split_whitespace() {
-            if token.starts_with("*.") && token.len() > 2 {
-                // Extension filter like "*.pdf" - extract extension
-                extension_filter = Some(token[2..].to_string());
-            } else {
-                query_tokens.push(token);
+        let mut query = Self {
+            mode: QueryMode::Substring(String::new()),
+            extension_filter: None,
+            file_type_mode,
+            sort_order,
+            path_segments: None,
+            extra_terms: Vec::new(),
+            excluded_terms: Vec::new(),
+            size_filter: None,
+            mtime_filter: None,
+        };
+
+        // A regex keeps everything after "/" as its pattern (only *.ext tokens
+        // are pulled out), so `!`, quotes, and `size:` inside it stay literal.
+        let is_regex = raw_effective
+            .split_whitespace()
+            .find(|t| !is_extension_token(t))
+            .is_some_and(|t| t.starts_with('/'));
+        if is_regex {
+            let mut parts: Vec<&str> = Vec::new();
+            for token in raw_effective.split_whitespace() {
+                if is_extension_token(token) {
+                    query.extension_filter = Some(token[2..].to_string());
+                } else {
+                    parts.push(token);
+                }
+            }
+            let text = parts.join(" ");
+            query.mode = match Regex::new(&format!("(?i){}", &text[1..])) {
+                Ok(re) => QueryMode::Regex(re),
+                Err(_) => QueryMode::Substring(text.to_lowercase()),
+            };
+            return query;
+        }
+
+        let mut words: Vec<Token> = Vec::new();
+        for token in tokenize(raw_effective) {
+            let plain = !token.quoted && !token.negated;
+            if plain && is_extension_token(&token.text) {
+                query.extension_filter = Some(token.text[2..].to_string());
+            } else if let Some(filter) = filter_token(&token.text, now).filter(|_| plain) {
+                match filter {
+                    FilterToken::Size(range) => query.size_filter = range,
+                    FilterToken::Modified(range) => query.mtime_filter = range,
+                }
+            } else if token.negated {
+                if !token.text.is_empty() {
+                    query.excluded_terms.push(token.text.to_lowercase());
+                }
+            } else if !token.text.is_empty() {
+                words.push(token);
             }
         }
 
-        let mut text = query_tokens.join(" ");
+        let text = words
+            .iter()
+            .map(|w| w.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let any_quoted = words.iter().any(|w| w.quoted);
 
         // Check for fuzzy search: starts with "~"
-        if text.starts_with('~') && text.len() > 1 {
+        if !any_quoted && text.starts_with('~') && text.len() > 1 {
             let fuzzy_query = text[1..].to_string();
             let max_distance = max_distance_for_query(fuzzy_query.len());
-
-            return Self {
-                mode: QueryMode::Fuzzy {
-                    query: fuzzy_query,
-                    max_distance,
-                },
-                extension_filter,
-                file_type_mode,
-                sort_order,
-                path_segments: None,
+            query.mode = QueryMode::Fuzzy {
+                query: fuzzy_query,
+                max_distance,
             };
+            return query;
         }
 
-        // Check for path-aware search: contains "/" but doesn't start with "/" (regex)
-        // and doesn't contain glob wildcards
-        let is_path_query = !text.is_empty()
-            && !text.starts_with('/')
-            && text.contains('/')
-            && !text.contains('*')
-            && !text.contains('?');
-
+        // Check for path-aware search: contains "/" and no glob wildcards
+        let is_path_query =
+            !any_quoted && text.contains('/') && !text.contains('*') && !text.contains('?');
         if is_path_query {
-            // Split into path segments
             let segments: Vec<String> = text
                 .split('/')
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string())
                 .collect();
-
             if segments.len() >= 2 {
                 // Use last segment as the search term for trigram lookup
-                let search_term = segments.last().unwrap().clone();
-                path_segments = Some(segments);
-
-                return Self {
-                    mode: QueryMode::Substring(search_term),
-                    extension_filter,
-                    file_type_mode,
-                    sort_order,
-                    path_segments,
-                };
+                query.mode = QueryMode::Substring(segments.last().unwrap().to_lowercase());
+                query.path_segments = Some(segments);
+                return query;
             } else if segments.len() == 1 {
                 // "src/" with trailing slash - treat as normal search for "src"
-                text = segments[0].clone();
+                query.mode = QueryMode::Substring(segments[0].to_lowercase());
+                return query;
             }
         }
 
-        // Determine query mode
-        let mode = if let Some(pattern) = text.strip_prefix('/') {
-            // Regex mode
-            match Regex::new(&format!("(?i){}", pattern)) {
-                Ok(re) => QueryMode::Regex(re),
-                Err(_) => QueryMode::Substring(text),
-            }
-        } else if !text.starts_with('/') && (text.contains('*') || text.contains('?')) {
-            // Glob mode (but not if it's already been parsed as extension filter)
-            match Glob::new(&format!("*{}*", text)) {
+        // Glob mode: unquoted text with * or ?
+        if !any_quoted && (text.contains('*') || text.contains('?')) {
+            query.mode = match Glob::new(&format!("*{}*", text)) {
                 Ok(glob) => QueryMode::Glob(glob.compile_matcher()),
-                Err(_) => QueryMode::Substring(text),
-            }
-        } else {
-            QueryMode::Substring(text)
-        };
-
-        Self {
-            mode,
-            extension_filter,
-            file_type_mode,
-            sort_order,
-            path_segments,
+                Err(_) => QueryMode::Substring(text.to_lowercase()),
+            };
+            return query;
         }
+
+        // Plain words: all of them, in any order. The longest one has the
+        // most trigrams, so it leads the candidate lookup.
+        let mut terms: Vec<String> = words.into_iter().map(|w| w.text.to_lowercase()).collect();
+        if let Some(longest) = (0..terms.len()).max_by_key(|&i| terms[i].chars().count()) {
+            query.mode = QueryMode::Substring(terms.remove(longest));
+            query.extra_terms = terms;
+        }
+        query
     }
 
     /// Whether this query restricts results to directories only.
@@ -394,9 +805,11 @@ mod tests {
         assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "marois"));
         assert_eq!(q.extension_filter, Some("pdf".to_string()));
 
-        // Extension filter in middle
+        // Extension filter in middle; the words around it are both required
         let q = ParsedQuery::parse("foo *.txt bar", SortOrder::MtimeDesc);
-        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "foo bar"));
+        let mut words: Vec<&str> = q.search_words().collect();
+        words.sort();
+        assert_eq!(words, ["bar", "foo"]);
         assert_eq!(q.extension_filter, Some("txt".to_string()));
     }
 
@@ -469,7 +882,8 @@ mod tests {
     #[test]
     fn test_parse_folder_prefix_case_insensitive() {
         let q = ParsedQuery::parse("Folder:Movies", SortOrder::MtimeDesc);
-        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "Movies"));
+        // Words are stored lowercase; matching ignores case either way
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "movies"));
         assert_eq!(q.file_type_mode, FileTypeMode::GotoDir);
     }
 
@@ -535,6 +949,217 @@ mod tests {
         // Regular (non-folder:) search still matches anywhere in the path.
         let q = ParsedQuery::parse("tattoo", SortOrder::MtimeDesc);
         assert!(q.matches_path("/home/u/tattoo/designs/photo.jpg"));
+    }
+
+    // Fixed reference time for date tests: local noon on Wednesday 2026-10-28
+    fn noon_oct_28() -> i64 {
+        local_time(2026, 9, 28, 12, 0, 0)
+    }
+
+    fn at(raw: &str) -> ParsedQuery {
+        ParsedQuery::parse_at(raw, SortOrder::MtimeDesc, noon_oct_28())
+    }
+
+    #[test]
+    fn words_match_in_any_order() {
+        let path = "/mnt/nas/movies/All That's Left of You (2025)/movie.mkv";
+        assert!(at("left all").matches_path(path));
+        assert!(at("you 2025 ALL").matches_path(path));
+        assert!(!at("left nothing").matches_path(path));
+        // The longest word leads the trigram lookup
+        assert!(matches!(at("ab movies").mode, QueryMode::Substring(ref s) if s == "movies"));
+    }
+
+    #[test]
+    fn quotes_keep_a_phrase_together() {
+        let path = "/v/All That's Left of You.mkv";
+        assert!(at("\"all that's\"").matches_path(path));
+        assert!(!at("\"that's all\"").matches_path(path));
+        // An unfinished quote still searches what was typed
+        assert!(at("\"all tha").matches_path(path));
+    }
+
+    #[test]
+    fn bang_words_exclude_paths() {
+        let q = at("movies !trailer");
+        assert_eq!(q.excluded_terms, ["trailer"]);
+        assert!(q.matches_path("/v/movies/film.mkv"));
+        assert!(!q.matches_path("/v/movies/Film Trailer.mkv"));
+        // A lone "!" (mid-typing) and a "!" inside a word are not exclusions
+        assert!(at("movies !").excluded_terms.is_empty());
+        let q = at("wow!");
+        assert!(q.excluded_terms.is_empty());
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "wow!"));
+        // Quoted exclusions keep their spaces
+        assert_eq!(at("x !\"bonus disc\"").excluded_terms, ["bonus disc"]);
+    }
+
+    #[test]
+    fn regex_queries_keep_bangs_quotes_and_filters_literal() {
+        let q = at("/a!b \"c\" size:>1");
+        assert!(matches!(q.mode, QueryMode::Regex(_)));
+        assert!(q.excluded_terms.is_empty() && q.size_filter.is_none());
+        // An extension filter before the pattern still applies
+        let q = at("*.rs /^main");
+        assert!(matches!(q.mode, QueryMode::Regex(_)));
+        assert_eq!(q.extension_filter, Some("rs".to_string()));
+    }
+
+    #[test]
+    fn size_filter_forms() {
+        let size = |raw: &str| at(raw).size_filter;
+        let g = 1i64 << 30;
+        assert_eq!(
+            size("size:>1G"),
+            Some(Interval {
+                start: Some(g + 1),
+                end: None
+            })
+        );
+        assert_eq!(
+            size("size:>=1g"),
+            Some(Interval {
+                start: Some(g),
+                end: None
+            })
+        );
+        assert_eq!(
+            size("size:<500k"),
+            Some(Interval {
+                start: None,
+                end: Some(500 * 1024)
+            })
+        );
+        assert_eq!(
+            size("size:<=2mb"),
+            Some(Interval {
+                start: None,
+                end: Some(2 * (1 << 20) + 1)
+            })
+        );
+        assert_eq!(
+            size("size:100"),
+            Some(Interval {
+                start: Some(100),
+                end: Some(101)
+            })
+        );
+        assert_eq!(
+            size("size:100M..1G"),
+            Some(Interval {
+                start: Some(100 << 20),
+                end: Some(g + 1)
+            })
+        );
+        assert_eq!(
+            size("size:1.5G"),
+            Some(Interval {
+                start: Some(g * 3 / 2),
+                end: Some(g * 3 / 2 + 1)
+            })
+        );
+        // Incomplete or unknown values are ignored rather than searched as text
+        let q = at("size:> movies");
+        assert!(q.size_filter.is_none());
+        assert!(matches!(q.mode, QueryMode::Substring(ref s) if s == "movies"));
+        assert!(at("size:12parsecs").size_filter.is_none());
+    }
+
+    #[test]
+    fn size_filter_skips_directories() {
+        let q = at("size:<1k");
+        assert!(q.meta_matches(false, 10, 0));
+        assert!(!q.meta_matches(false, 4096, 0));
+        assert!(!q.meta_matches(true, 0, 0), "folders have no indexed size");
+    }
+
+    #[test]
+    fn date_filter_calendar_terms() {
+        let dm = |raw: &str| at(raw).mtime_filter.unwrap();
+        let day = |m0, d| Interval {
+            start: Some(local_time(2026, m0, d, 0, 0, 0)),
+            end: Some(local_time(2026, m0, d + 1, 0, 0, 0)),
+        };
+        assert_eq!(dm("dm:2026-10-29"), day(9, 29));
+        assert_eq!(dm("dm:today"), day(9, 28));
+        assert_eq!(dm("datemodified:yesterday"), day(9, 27));
+        assert_eq!(
+            dm("dm:2026-10"),
+            Interval {
+                start: Some(local_time(2026, 9, 1, 0, 0, 0)),
+                end: Some(local_time(2026, 10, 1, 0, 0, 0))
+            }
+        );
+        // > means after the whole year, < before it begins
+        assert_eq!(dm("dm:>2025").start, Some(local_time(2026, 0, 1, 0, 0, 0)));
+        assert_eq!(dm("dm:<2026").end, Some(local_time(2026, 0, 1, 0, 0, 0)));
+        assert_eq!(
+            dm("dm:2026-01..2026-03"),
+            Interval {
+                start: Some(local_time(2026, 0, 1, 0, 0, 0)),
+                end: Some(local_time(2026, 3, 1, 0, 0, 0))
+            }
+        );
+        assert!(at("dm:2026-13").mtime_filter.is_none());
+    }
+
+    #[test]
+    fn date_filter_relative_terms() {
+        let dm = |raw: &str| at(raw).mtime_filter.unwrap();
+        // 2026-10-28 is a Wednesday; weeks start on Monday the 26th
+        assert_eq!(
+            dm("dm:thisweek"),
+            Interval {
+                start: Some(local_time(2026, 9, 26, 0, 0, 0)),
+                end: Some(local_time(2026, 10, 2, 0, 0, 0))
+            }
+        );
+        assert_eq!(
+            dm("dm:lastweek").start,
+            Some(local_time(2026, 9, 19, 0, 0, 0))
+        );
+        assert_eq!(
+            dm("dm:thismonth").start,
+            Some(local_time(2026, 9, 1, 0, 0, 0))
+        );
+        assert_eq!(
+            dm("dm:lastyear").start,
+            Some(local_time(2025, 0, 1, 0, 0, 0))
+        );
+        assert_eq!(
+            dm("dm:last7days"),
+            Interval {
+                start: Some(local_time(2026, 9, 21, 12, 0, 0)),
+                end: None
+            }
+        );
+        assert_eq!(dm("dm:last24h").start, Some(noon_oct_28() - 24 * 3600));
+        assert!(at("dm:last7fortnights").mtime_filter.is_none());
+    }
+
+    #[test]
+    fn narrowing_rules_for_the_result_cache() {
+        let narrows = |new: &str, old: &str| at(new).narrows(&at(old));
+        assert!(narrows("conf", "con"));
+        assert!(narrows("left all", "all"), "an added word removes results");
+        assert!(
+            narrows("foo !b", "foo"),
+            "an added exclusion removes results"
+        );
+        assert!(
+            narrows("foo !b", "foo !ba"),
+            "a shorter exclusion removes more"
+        );
+        assert!(
+            !narrows("foo !ba", "foo !b"),
+            "a longer exclusion brings results back"
+        );
+        assert!(!narrows("foo", "foo bar"), "dropping a word widens");
+        assert!(
+            !narrows("foo size:>1G", "foo"),
+            "a new filter is not a refinement"
+        );
+        assert!(!narrows("foo*", "foo"), "glob does not refine");
     }
 
     #[test]

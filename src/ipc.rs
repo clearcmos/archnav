@@ -114,7 +114,10 @@ fn handle_search(json: &str, engine: &CoreEngine) -> String {
     };
 
     let mut query = ParsedQuery::parse(&req.query, SortOrder::MtimeDesc);
-    query.extension_filter = req.extension;
+    // An explicit "extension" field wins; otherwise keep any *.ext in the query
+    if req.extension.is_some() {
+        query.extension_filter = req.extension;
+    }
     query.file_type_mode = file_type_mode;
 
     let start = std::time::Instant::now();
@@ -140,15 +143,19 @@ fn handle_search_all(json: &str, engine: &CoreEngine) -> String {
     let idx = engine.index.read().unwrap();
 
     let mut query = ParsedQuery::parse(&req.query, SortOrder::MtimeDesc);
-    query.extension_filter = req.extension;
+    // An explicit "extension" field wins; otherwise keep any *.ext in the query
+    if req.extension.is_some() {
+        query.extension_filter = req.extension;
+    }
 
     let start = std::time::Instant::now();
-    let results = idx.search_all(&query, &req.bookmark_paths);
+    let (results, total_matches) = idx.search_all_counted(&query, &req.bookmark_paths);
     let elapsed = start.elapsed().as_millis() as u64;
     let total = idx.file_count();
 
     let resp = serde_json::json!({
         "results": results,
+        "total_matches": total_matches,
         "total_indexed": total,
         "search_time_ms": elapsed,
     });

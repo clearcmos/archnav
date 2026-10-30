@@ -216,8 +216,10 @@ impl qobject::SearchEngine {
                 qobj.as_mut().set_total_indexed(file_count);
                 qobj.as_mut().set_bookmark_count(bookmark_count);
                 qobj.as_mut().set_engine_ready(true);
-                qobj.as_mut()
-                    .set_status_text(QString::from(&format!("{} files indexed", file_count)));
+                qobj.as_mut().set_status_text(QString::from(&format!(
+                    "{} files indexed",
+                    crate::search::engine::group_digits(file_count as usize)
+                )));
             });
         });
     }
@@ -252,8 +254,10 @@ impl qobject::SearchEngine {
         );
 
         std::thread::spawn(move || {
-            let (results, elapsed) = inner.search(&query_str, sort_index);
+            let (results, total, elapsed) = inner.search(&query_str, sort_index);
             let result_count = results.len() as i32;
+            let status =
+                crate::search::engine::results_status(results.len(), total, elapsed.as_millis());
             let search_time = elapsed.as_millis() as i32;
             let total_indexed = inner.file_count() as i32;
 
@@ -283,10 +287,7 @@ impl qobject::SearchEngine {
                 qobj.as_mut().set_result_count(result_count);
                 qobj.as_mut().set_search_time_ms(search_time);
                 qobj.as_mut().set_total_indexed(total_indexed);
-                qobj.as_mut().set_status_text(QString::from(&format!(
-                    "{} results in {}ms",
-                    result_count, search_time
-                )));
+                qobj.as_mut().set_status_text(QString::from(&status));
                 qobj.as_mut().resultsReady();
             });
         });
@@ -314,8 +315,10 @@ impl qobject::SearchEngine {
             let _ = qt_thread.queue(move |mut qobj| {
                 qobj.as_mut().set_bookmark_count(count);
                 qobj.as_mut().set_total_indexed(file_count);
-                qobj.as_mut()
-                    .set_status_text(QString::from(&format!("{} files indexed", file_count)));
+                qobj.as_mut().set_status_text(QString::from(&format!(
+                    "{} files indexed",
+                    crate::search::engine::group_digits(file_count as usize)
+                )));
                 qobj.as_mut().bookmarksChanged();
             });
         });
@@ -369,7 +372,7 @@ impl qobject::SearchEngine {
                 qobj.as_mut().set_total_indexed(file_count);
                 qobj.as_mut().set_status_text(QString::from(&format!(
                     "Rescan complete: {} files",
-                    file_count
+                    crate::search::engine::group_digits(file_count as usize)
                 )));
                 qobj.as_mut().rescanComplete();
             });
