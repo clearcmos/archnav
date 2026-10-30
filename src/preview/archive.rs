@@ -20,9 +20,11 @@ pub fn preview_zip(path: &str) -> String {
     lines.push(format!("ZIP Archive: {} entries\n", total));
 
     for i in 0..total.min(MAX_ENTRIES) {
-        if let Ok(entry) = archive.by_index(i) {
+        if let Ok(entry) = archive.by_index_raw(i) {
             let size = super::format_size(entry.size());
-            let name = entry.name();
+            let name = entry
+                .name()
+                .unwrap_or_else(|_| String::from_utf8_lossy(entry.name_raw()));
             if entry.is_dir() {
                 lines.push(format!("  [dir]     {}", name));
             } else {
@@ -199,7 +201,7 @@ mod tests {
         let path = dir.join("fixture.zip");
         let file = std::fs::File::create(&path).unwrap();
         let mut w = zip::ZipWriter::new(file);
-        let opts: zip::write::FileOptions = Default::default();
+        let opts = zip::write::SimpleFileOptions::default();
         w.add_directory("sub/", opts).unwrap();
         w.start_file("hello.txt", opts).unwrap();
         w.write_all(b"hello world").unwrap();
@@ -223,6 +225,26 @@ mod tests {
     fn zip_preview_lists_entries_and_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let path = zip_fixture(tmp.path());
+        let out = preview_zip(path.to_str().unwrap());
+        assert!(out.contains("ZIP Archive: 2 entries"));
+        assert!(out.contains("[dir]     sub/"));
+        assert!(out.contains("11 B") && out.contains("hello.txt"));
+    }
+
+    #[test]
+    fn zip_preview_lists_entries_without_a_decoder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = zip_fixture(tmp.path());
+        let mut bytes = std::fs::read(&path).unwrap();
+        // Relabel every entry as Deflated; zip is built with no decoders.
+        for i in 0..bytes.len() - 4 {
+            match &bytes[i..i + 4] {
+                b"PK\x03\x04" => bytes[i + 8] = 8,
+                b"PK\x01\x02" => bytes[i + 10] = 8,
+                _ => {}
+            }
+        }
+        std::fs::write(&path, &bytes).unwrap();
         let out = preview_zip(path.to_str().unwrap());
         assert!(out.contains("ZIP Archive: 2 entries"));
         assert!(out.contains("[dir]     sub/"));
