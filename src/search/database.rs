@@ -14,7 +14,10 @@ const DB_PATH: &str = ".local/share/archnav/index.db";
 const TRIGRAM_SCHEMA_VERSION: &str = "2";
 
 pub enum DbOp {
-    SaveFile(FileEntry, Vec<[u8; 3]>),
+    /// Insert a newly indexed file.
+    SaveFile(FileEntry),
+    /// Rewrite the metadata of a file already in the table (same id and path).
+    UpdateFile(FileEntry),
     RemoveFile(String),
     SaveBookmark(Bookmark),
     ClearFilesUnder(String),
@@ -46,6 +49,10 @@ impl Database {
             PRAGMA synchronous = NORMAL;
             PRAGMA cache_size = -64000;
             PRAGMA temp_store = MEMORY;
+            -- Truncate the WAL to 64 MiB after a checkpoint. Without a limit it
+            -- keeps the size of its largest transaction (a posting-list rebuild)
+            -- for good.
+            PRAGMA journal_size_limit = 67108864;
 
             CREATE TABLE IF NOT EXISTS files (
                 id INTEGER PRIMARY KEY,
@@ -61,11 +68,6 @@ impl Database {
                 path TEXT UNIQUE NOT NULL,
                 is_network INTEGER NOT NULL,
                 last_scan INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS file_trigrams (
-                file_id INTEGER PRIMARY KEY,
-                trigrams BLOB NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS posting_lists (
@@ -84,11 +86,33 @@ impl Database {
                 last_opened INTEGER NOT NULL DEFAULT 0
             );
 
-            CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
-            CREATE INDEX IF NOT EXISTS idx_files_mtime ON files(mtime);
             CREATE INDEX IF NOT EXISTS idx_file_access_last ON file_access(last_opened);
         "#,
         )?;
+
+        // Older databases also stored every file's trigrams, which are a pure
+        // function of its path, plus two indexes on `files` that nothing
+        // queries: one on path duplicating the index SQLite already keeps for
+        // its UNIQUE constraint, one on mtime. They held a large share of the
+        // file and added writes to every row change. Drop them once, then
+        // VACUUM so the space goes back to the filesystem.
+        let legacy: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE name IN ('file_trigrams', 'idx_files_path', 'idx_files_mtime')",
+            [],
+            |row| row.get(0),
+        )?;
+        if legacy > 0 {
+            info!("Dropping stored trigrams and unused indexes, then compacting the database");
+            let start = Instant::now();
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS file_trigrams;
+                 DROP INDEX IF EXISTS idx_files_path;
+                 DROP INDEX IF EXISTS idx_files_mtime;
+                 VACUUM;",
+            )?;
+            info!("Database compacted in {:?}", start.elapsed());
+        }
 
         // Check schema version; if outdated, clear all caches
         let current_version: Option<String> = conn
@@ -101,7 +125,6 @@ impl Database {
 
         if current_version.as_deref() != Some(TRIGRAM_SCHEMA_VERSION) {
             info!("Trigram schema version changed, rebuilding cache");
-            conn.execute("DELETE FROM file_trigrams", [])?;
             conn.execute("DELETE FROM posting_lists", [])?;
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('trigram_schema_version', ?1)",
@@ -294,29 +317,17 @@ impl Database {
         }
 
         // Backfill trigrams for files added after this cache was built. Such files
-        // (id >= cached_next_id) live in `files`/`file_trigrams` but are missing
-        // from the cached posting lists, so without this they show up in all-file
-        // listings (e.g. `*.mkv`) yet are invisible to substring/trigram search,
-        // and a rescan can't repair it because TrigramIndex::add() skips known
-        // paths. file_trigrams is kept in sync with files, so it is authoritative.
+        // (id >= cached_next_id) live in `files` but are missing from the cached
+        // posting lists, so without this they show up in all-file listings (e.g.
+        // `*.mkv`) yet are invisible to substring/trigram search, and a rescan
+        // can't repair it because TrigramIndex::add() skips known paths.
+        // Trigrams are a pure function of the path, so they are recomputed.
         let mut backfilled = 0usize;
-        {
-            let mut stmt = self
-                .conn
-                .prepare("SELECT file_id, trigrams FROM file_trigrams WHERE file_id >= ?1")?;
-            let rows = stmt.query_map(params![cached_next_id], |row| {
-                Ok((row.get::<_, u32>(0)?, row.get::<_, Vec<u8>>(1)?))
-            })?;
-            for row in rows {
-                let (file_id, blob) = row?;
-                if !index.files.contains_key(&file_id) {
-                    continue; // dangling trigram row for an already-removed file
-                }
-                for &trigram in blob.as_chunks::<3>().0 {
-                    index.trigrams.entry(trigram).or_default().insert(file_id);
-                }
-                backfilled += 1;
+        for entry in index.files.values().filter(|e| e.id >= cached_next_id) {
+            for trigram in TrigramIndex::compute_trigrams(&entry.path) {
+                index.trigrams.entry(trigram).or_default().insert(entry.id);
             }
+            backfilled += 1;
         }
         if backfilled > 0 {
             info!(
@@ -339,47 +350,29 @@ impl Database {
         Ok(Some(file_count))
     }
 
-    /// Slow path: load files with per-file trigrams, rebuild posting lists in memory.
+    /// Slow path: load files and rebuild posting lists in memory from their paths.
     fn load_slow(&self, index: &mut TrigramIndex) -> rusqlite::Result<usize> {
         let start = Instant::now();
 
-        let mut stmt = self.conn.prepare(
-            "SELECT f.id, f.path, f.is_dir, f.mtime, f.size, ft.trigrams
-             FROM files f
-             LEFT JOIN file_trigrams ft ON f.id = ft.file_id",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, is_dir, mtime, size FROM files")?;
 
         let mut count = 0;
-        let mut recomputed = 0;
 
         let rows = stmt.query_map([], |row| {
-            Ok((
-                FileEntry {
-                    id: row.get(0)?,
-                    path: row.get(1)?,
-                    is_dir: row.get::<_, i32>(2)? != 0,
-                    mtime: row.get(3)?,
-                    size: row.get(4)?,
-                },
-                row.get::<_, Option<Vec<u8>>>(5)?,
-            ))
+            Ok(FileEntry {
+                id: row.get(0)?,
+                path: row.get(1)?,
+                is_dir: row.get::<_, i32>(2)? != 0,
+                mtime: row.get(3)?,
+                size: row.get(4)?,
+            })
         })?;
 
-        let mut needs_backfill: Vec<(u32, Vec<[u8; 3]>)> = Vec::new();
-
         for row in rows {
-            let (entry, trigram_blob) = row?;
-            let id = entry.id;
-
-            let trigrams: Vec<[u8; 3]> = if let Some(blob) = trigram_blob {
-                blob.as_chunks::<3>().0.to_vec()
-            } else {
-                recomputed += 1;
-                let computed = TrigramIndex::compute_trigrams(&entry.path);
-                needs_backfill.push((id, computed.clone()));
-                computed
-            };
-
+            let entry = row?;
+            let trigrams = TrigramIndex::compute_trigrams(&entry.path);
             index.add_with_trigrams(entry, &trigrams);
             count += 1;
         }
@@ -387,33 +380,7 @@ impl Database {
         // Load bookmarks
         self.load_bookmarks(index)?;
 
-        // Backfill missing per-file trigrams
-        if !needs_backfill.is_empty() {
-            info!(
-                "Backfilling trigram cache for {} files (recomputed {} of {})",
-                needs_backfill.len(),
-                recomputed,
-                count
-            );
-            let tx = self.conn.unchecked_transaction()?;
-            {
-                let mut insert = tx.prepare(
-                    "INSERT OR REPLACE INTO file_trigrams (file_id, trigrams) VALUES (?1, ?2)",
-                )?;
-                for (file_id, trigrams) in &needs_backfill {
-                    let blob = pack_trigrams(trigrams);
-                    insert.execute(params![file_id, blob])?;
-                }
-            }
-            tx.commit()?;
-        }
-
-        info!(
-            "Slow loaded {} files ({} recomputed) in {:?}",
-            count,
-            recomputed,
-            start.elapsed()
-        );
+        info!("Slow loaded {} files in {:?}", count, start.elapsed());
 
         Ok(count)
     }
@@ -481,24 +448,13 @@ impl Database {
         Ok(())
     }
 
-    fn save_file(&self, entry: &FileEntry, trigrams: &[[u8; 3]]) {
+    fn save_file(&self, entry: &FileEntry) {
         if let Err(e) = self.conn.execute(
             "INSERT OR REPLACE INTO files (id, path, is_dir, mtime, size) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![entry.id, entry.path, entry.is_dir as i32, entry.mtime, entry.size],
         ) {
             warn!("Failed to save file: {}", e);
             return;
-        }
-
-        // Persist per-file trigrams
-        if !trigrams.is_empty() {
-            let blob = pack_trigrams(trigrams);
-            if let Err(e) = self.conn.execute(
-                "INSERT OR REPLACE INTO file_trigrams (file_id, trigrams) VALUES (?1, ?2)",
-                params![entry.id, blob],
-            ) {
-                warn!("Failed to save trigrams: {}", e);
-            }
         }
 
         // Track the high-water mark of allocated ids. next_id is otherwise
@@ -516,27 +472,26 @@ impl Database {
         }
     }
 
-    fn remove_file(&self, path: &str) {
-        let file_id: Option<u32> = self
-            .conn
-            .query_row(
-                "SELECT id FROM files WHERE path = ?1",
-                params![path],
-                |row| row.get(0),
-            )
-            .ok();
+    /// Rewrite only the metadata columns, so an mtime or size change on an
+    /// existing file does not delete and reinsert its row. A row missing from
+    /// the table (an earlier insert failed) is inserted instead.
+    fn update_file(&self, entry: &FileEntry) {
+        match self.conn.execute(
+            "UPDATE files SET is_dir = ?2, mtime = ?3, size = ?4 WHERE id = ?1",
+            params![entry.id, entry.is_dir as i32, entry.mtime, entry.size],
+        ) {
+            Ok(0) => self.save_file(entry),
+            Ok(_) => {}
+            Err(e) => warn!("Failed to update file: {}", e),
+        }
+    }
 
+    fn remove_file(&self, path: &str) {
         if let Err(e) = self
             .conn
             .execute("DELETE FROM files WHERE path = ?1", params![path])
         {
             warn!("Failed to remove file: {}", e);
-        }
-
-        if let Some(id) = file_id {
-            let _ = self
-                .conn
-                .execute("DELETE FROM file_trigrams WHERE file_id = ?1", params![id]);
         }
     }
 
@@ -558,14 +513,6 @@ impl Database {
         let prefix = format!("{}/%", escape_like(root));
 
         if let Err(e) = self.conn.execute(
-            "DELETE FROM file_trigrams WHERE file_id IN
-                (SELECT id FROM files WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\')",
-            params![root, prefix],
-        ) {
-            warn!("Failed to clear trigrams: {}", e);
-        }
-
-        if let Err(e) = self.conn.execute(
             "DELETE FROM files WHERE path = ?1 OR path LIKE ?2 ESCAPE '\\'",
             params![root, prefix],
         ) {
@@ -575,7 +522,8 @@ impl Database {
 
     fn process_op(&self, op: DbOp) {
         match op {
-            DbOp::SaveFile(entry, trigrams) => self.save_file(&entry, &trigrams),
+            DbOp::SaveFile(entry) => self.save_file(&entry),
+            DbOp::UpdateFile(entry) => self.update_file(&entry),
             DbOp::RemoveFile(path) => self.remove_file(&path),
             DbOp::SaveBookmark(bookmark) => self.save_bookmark(&bookmark),
             DbOp::ClearFilesUnder(path) => self.clear_files_under(&path),
@@ -634,15 +582,6 @@ fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
-}
-
-/// Pack trigrams into a BLOB (3 bytes per trigram, concatenated).
-fn pack_trigrams(trigrams: &[[u8; 3]]) -> Vec<u8> {
-    let mut blob = Vec::with_capacity(trigrams.len() * 3);
-    for t in trigrams {
-        blob.extend_from_slice(t);
-    }
-    blob
 }
 
 /// Pack a set of u32 IDs into a BLOB (4 bytes each, little-endian).
@@ -752,8 +691,8 @@ mod fast_load_tests {
             });
             db.save_bookmark(&idx.bookmarks[0]);
 
-            let (id, tris) = idx.add("/data/alpha.txt".into(), false, 1, 1);
-            db.save_file(idx.files.get(&id).unwrap(), &tris);
+            let (id, _) = idx.add("/data/alpha.txt".into(), false, 1, 1);
+            db.save_file(idx.files.get(&id).unwrap());
             db.save_posting_lists(&idx).unwrap();
         }
 
@@ -764,8 +703,8 @@ mod fast_load_tests {
             let db = Database::open_at(path.clone()).unwrap();
             let mut idx = TrigramIndex::new();
             db.load_into_index(&mut idx).unwrap();
-            let (id, tris) = idx.add("/data/A Man Called Otto.mkv".into(), false, 2, 2);
-            db.save_file(idx.files.get(&id).unwrap(), &tris);
+            let (id, _) = idx.add("/data/A Man Called Otto.mkv".into(), false, 2, 2);
+            db.save_file(idx.files.get(&id).unwrap());
         }
 
         // A fresh fast load must still surface the file added after the cache.
@@ -810,8 +749,8 @@ mod fast_load_tests {
                 "/mnt/my_dir/c.txt",
                 "/mnt/myxdir/d.txt",
             ] {
-                let (id, tris) = idx.add(p.to_string(), false, 1, 1);
-                db.save_file(idx.files.get(&id).unwrap(), &tris);
+                let (id, _) = idx.add(p.to_string(), false, 1, 1);
+                db.save_file(idx.files.get(&id).unwrap());
             }
 
             db.clear_files_under("/mnt/data");
@@ -838,6 +777,93 @@ mod fast_load_tests {
         cleanup(&path);
     }
 
+    fn file_row(db: &Database, id: u32) -> Option<(String, i64, i64)> {
+        db.conn
+            .query_row(
+                "SELECT path, mtime, size FROM files WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .ok()
+    }
+
+    #[test]
+    fn update_file_rewrites_metadata_and_inserts_a_missing_row() {
+        let path = temp_db_path();
+        cleanup(&path);
+
+        {
+            let db = Database::open_at(path.clone()).unwrap();
+            let mut idx = TrigramIndex::new();
+            let (id, _) = idx.add("/d/notes.txt".to_string(), false, 1, 10);
+            db.save_file(idx.files.get(&id).unwrap());
+
+            idx.upsert("/d/notes.txt".to_string(), false, 2, 20);
+            db.update_file(idx.files.get(&id).unwrap());
+            assert_eq!(file_row(&db, id), Some(("/d/notes.txt".into(), 2, 20)));
+
+            // A row the table never got is written by the update rather than lost.
+            let (lost, _) = idx.add("/d/lost.txt".to_string(), false, 3, 30);
+            db.update_file(idx.files.get(&lost).unwrap());
+            assert_eq!(file_row(&db, lost), Some(("/d/lost.txt".into(), 3, 30)));
+        }
+
+        cleanup(&path);
+    }
+
+    /// Opening a database in the old layout drops the stored per-file
+    /// trigrams and the two unused `files` indexes, and keeps every file.
+    #[test]
+    fn legacy_trigram_table_and_indexes_are_dropped_on_open() {
+        let path = temp_db_path();
+        cleanup(&path);
+
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL,
+                     is_dir INTEGER NOT NULL, mtime INTEGER NOT NULL, size INTEGER NOT NULL);
+                 CREATE TABLE file_trigrams (file_id INTEGER PRIMARY KEY, trigrams BLOB NOT NULL);
+                 CREATE INDEX idx_files_path ON files(path);
+                 CREATE INDEX idx_files_mtime ON files(mtime);
+                 INSERT INTO files VALUES (1, '/d/kept.txt', 0, 5, 50);
+                 INSERT INTO file_trigrams VALUES (1, x'6b6570');",
+            )
+            .unwrap();
+        }
+
+        {
+            let db = Database::open_at(path.clone()).unwrap();
+            let legacy: i64 = db
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE name IN ('file_trigrams', 'idx_files_path', 'idx_files_mtime')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(legacy, 0);
+            assert_eq!(file_row(&db, 1), Some(("/d/kept.txt".into(), 5, 50)));
+
+            db.save_bookmark(&Bookmark {
+                name: "d".into(),
+                path: "/d".into(),
+                is_network: false,
+            });
+            let mut idx = TrigramIndex::new();
+            db.load_into_index(&mut idx).unwrap();
+            let q = ParsedQuery::parse("kept", SortOrder::MtimeDesc);
+            assert_eq!(
+                idx.search_all(&q, &[]).len(),
+                1,
+                "trigrams come from the path"
+            );
+        }
+
+        cleanup(&path);
+    }
+
     /// Deleting the highest-id file must not let a later file reuse its id
     /// across a restart; a reused id is skipped by the posting-list backfill
     /// and stays invisible to trigram search.
@@ -850,10 +876,10 @@ mod fast_load_tests {
         {
             let db = Database::open_at(path.clone()).unwrap();
             let mut idx = TrigramIndex::new();
-            let (id_a, tris_a) = idx.add("/d/aaaa.txt".to_string(), false, 1, 1);
-            db.save_file(idx.files.get(&id_a).unwrap(), &tris_a);
-            let (id_b, tris_b) = idx.add("/d/bbbb.txt".to_string(), false, 2, 2);
-            db.save_file(idx.files.get(&id_b).unwrap(), &tris_b);
+            let (id_a, _) = idx.add("/d/aaaa.txt".to_string(), false, 1, 1);
+            db.save_file(idx.files.get(&id_a).unwrap());
+            let (id_b, _) = idx.add("/d/bbbb.txt".to_string(), false, 2, 2);
+            db.save_file(idx.files.get(&id_b).unwrap());
             removed_id = id_b;
             db.remove_file("/d/bbbb.txt");
         }

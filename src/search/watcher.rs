@@ -6,8 +6,8 @@ use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use super::database::DbOp;
-use super::scanner::{get_mtime, is_network_mount, should_exclude};
-use super::trigram::{FileEntry, TrigramIndex};
+use super::scanner::{index_path, is_network_mount, mtime_of, should_exclude};
+use super::trigram::TrigramIndex;
 
 pub fn start_watcher(
     paths: Vec<PathBuf>,
@@ -64,22 +64,9 @@ fn handle_fs_event(event: Event, index: &Arc<RwLock<TrigramIndex>>, db_tx: &Send
                             continue;
                         }
                         let path_str = path.to_string_lossy().to_string();
-                        let mtime = get_mtime(&path);
+                        let mtime = mtime_of(&meta);
                         let size = if is_dir { 0 } else { meta.len() };
-
-                        let (id, trigrams) = {
-                            let mut idx = index.write().unwrap();
-                            idx.add(path_str.clone(), is_dir, mtime, size)
-                        };
-
-                        let entry = FileEntry {
-                            id,
-                            path: path_str,
-                            is_dir,
-                            mtime,
-                            size,
-                        };
-                        let _ = db_tx.send(DbOp::SaveFile(entry, trigrams));
+                        index_path(index, db_tx, path_str, is_dir, mtime, size);
                         debug!("Indexed: {}", path.display());
                     }
                     // The rename-From half of a move arrives as a Modify event

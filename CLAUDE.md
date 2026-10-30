@@ -136,6 +136,8 @@ The search engine uses **trigram indexing** for instant substring matching:
 - **Posting list cache**: Pre-built posting lists stored in SQLite for instant startup
 - **Async watcher setup**: Engine reports "ready" immediately after index load; inotify watches are set up in background thread
 - **Count-based cache validation**: Compares cached file count vs actual to detect staleness
+- **Write only what changed**: every scan path (initial scan, reconcile, network rescan, inotify) goes through `scanner::index_path`. An entry whose `is_dir`/mtime/size match the index costs one stat and a read-locked lookup, with no write lock and no DB op; changed metadata is an in-place `UPDATE` (`DbOp::UpdateFile`), and only new paths are inserted. Re-saving every entry on each 5-minute NAS rescan used to write about 500 MiB per pass.
+- **No stored per-file trigrams**: trigrams are a pure function of the path, so the slow load and the fast-load backfill recompute them (about 3 s for 1.4M paths). `Database::open_at` drops the legacy `file_trigrams` table and the unused `idx_files_path` (a duplicate of the `UNIQUE` index) and `idx_files_mtime`, then VACUUMs once. `journal_size_limit` caps the WAL at 64 MiB after checkpoints.
 
 ## Engineering Standard (tier 2: public repo)
 
@@ -297,7 +299,8 @@ Window close behavior:
 - **Integrity check**: Every 60s, checks 5000 files per cycle; entries under a
   bookmark root that is currently unreachable (e.g. an unmounted share) are
   skipped, not purged
-- **Network mounts**: Rescanned every 5 minutes (no inotify). A bookmark is
+- **Network mounts**: Rescanned every 5 minutes (no inotify); a rescan writes
+  only new or changed entries to the database. A bookmark is
   treated as network if its config `is_network` flag is set or its mount is
   detected as nfs/cifs/sshfs in /proc/mounts (longest mount-point match)
 - **Single instance**: A second plain launch toggles the running instance and

@@ -7,7 +7,7 @@ use tracing::info;
 use walkdir::WalkDir;
 
 use super::database::DbOp;
-use super::trigram::{FileEntry, TrigramIndex, EXCLUDE_PATTERNS};
+use super::trigram::{FileEntry, TrigramIndex, Upsert, EXCLUDE_PATTERNS};
 
 /// User-configured recursive exclude paths (absolute, already normalized:
 /// `~` expanded and trailing slashes trimmed). Installed once at startup via
@@ -124,15 +124,65 @@ pub fn should_exclude(path: &Path, is_dir: bool) -> bool {
     false
 }
 
-pub fn get_mtime(path: &Path) -> i64 {
-    path.metadata()
-        .and_then(|m| m.modified())
+/// Modification time in Unix seconds, or 0 if the platform does not report one.
+pub fn mtime_of(meta: &fs::Metadata) -> i64 {
+    meta.modified()
         .map(|t| t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
         .unwrap_or(0)
 }
 
-pub fn get_size(path: &Path) -> u64 {
-    path.metadata().map(|m| m.len()).unwrap_or(0)
+/// The (mtime, size) the index records for `path`, from a single stat that
+/// follows symlinks. Directories record size 0; a failed stat records zeros.
+pub fn stat_entry(path: &Path, is_dir: bool) -> (i64, u64) {
+    match path.metadata() {
+        Ok(meta) => (mtime_of(&meta), if is_dir { 0 } else { meta.len() }),
+        Err(_) => (0, 0),
+    }
+}
+
+/// Index one entry and queue only the database write it needs. Most entries
+/// on a rescan are unchanged; the read-locked check lets those skip the write
+/// lock and the database entirely.
+pub fn index_path(
+    index: &Arc<RwLock<TrigramIndex>>,
+    db_tx: &Sender<DbOp>,
+    path: String,
+    is_dir: bool,
+    mtime: i64,
+    size: u64,
+) -> Upsert {
+    let unchanged = {
+        let idx = index.read().unwrap();
+        idx.path_to_id
+            .get(&path)
+            .copied()
+            .filter(|_| idx.is_current(&path, is_dir, mtime, size))
+    };
+    if let Some(id) = unchanged {
+        return Upsert::Unchanged(id);
+    }
+
+    let outcome = {
+        let mut idx = index.write().unwrap();
+        idx.upsert(path.clone(), is_dir, mtime, size)
+    };
+    let entry = |id| FileEntry {
+        id,
+        path,
+        is_dir,
+        mtime,
+        size,
+    };
+    match &outcome {
+        Upsert::Unchanged(_) => {}
+        Upsert::Updated(id) => {
+            let _ = db_tx.send(DbOp::UpdateFile(entry(*id)));
+        }
+        Upsert::Added(id, _) => {
+            let _ = db_tx.send(DbOp::SaveFile(entry(*id)));
+        }
+    }
+    outcome
 }
 
 pub fn scan_directory(
@@ -141,6 +191,7 @@ pub fn scan_directory(
     db_tx: &Sender<DbOp>,
 ) -> usize {
     let mut count = 0;
+    let (mut added, mut updated) = (0usize, 0usize);
     let start = time::Instant::now();
 
     info!("Scanning directory: {}", root.display());
@@ -152,29 +203,22 @@ pub fn scan_directory(
 
     for entry in walker.filter_map(|e| e.ok()) {
         let path = entry.path();
-        let path_str = path.to_string_lossy().to_string();
         let is_dir = entry.file_type().is_dir();
-        let mtime = get_mtime(path);
-        let size = if is_dir { 0 } else { get_size(path) };
-
-        let (id, trigrams) = {
-            let mut idx = index.write().unwrap();
-            idx.add(path_str.clone(), is_dir, mtime, size)
-        };
-
-        let file_entry = FileEntry {
-            id,
-            path: path_str,
-            is_dir,
-            mtime,
-            size,
-        };
-        let _ = db_tx.send(DbOp::SaveFile(file_entry, trigrams));
+        let (mtime, size) = stat_entry(path, is_dir);
+        let path_str = path.to_string_lossy().to_string();
+        match index_path(index, db_tx, path_str, is_dir, mtime, size) {
+            Upsert::Added(..) => added += 1,
+            Upsert::Updated(_) => updated += 1,
+            Upsert::Unchanged(_) => {}
+        }
         count += 1;
     }
 
     let elapsed = start.elapsed();
-    info!("Scanned {} files in {:?}", count, elapsed);
+    info!(
+        "Scanned {} files ({} new, {} updated) in {:?}",
+        count, added, updated, elapsed
+    );
 
     count
 }
@@ -212,22 +256,8 @@ pub fn reconcile_directory(
 
         // New file - add it
         let is_dir = entry.file_type().is_dir();
-        let mtime = get_mtime(path);
-        let size = if is_dir { 0 } else { get_size(path) };
-
-        let (id, trigrams) = {
-            let mut idx = index.write().unwrap();
-            idx.add(path_str.clone(), is_dir, mtime, size)
-        };
-
-        let file_entry = FileEntry {
-            id,
-            path: path_str,
-            is_dir,
-            mtime,
-            size,
-        };
-        let _ = db_tx.send(DbOp::SaveFile(file_entry, trigrams));
+        let (mtime, size) = stat_entry(path, is_dir);
+        index_path(index, db_tx, path_str, is_dir, mtime, size);
         added += 1;
     }
 
@@ -246,10 +276,79 @@ pub fn reconcile_directory(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_network_mount_in, path_under_any, path_under_root};
+    use super::{is_network_mount_in, path_under_any, path_under_root, scan_directory};
+    use crate::search::database::DbOp;
+    use crate::search::trigram::TrigramIndex;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::mpsc::{channel, Receiver};
+    use std::sync::{Arc, RwLock};
 
     fn excludes(paths: &[&str]) -> Vec<String> {
         paths.iter().map(|s| s.to_string()).collect()
+    }
+
+    static TREE_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// A small real directory tree: two files and a subdirectory holding one.
+    fn temp_tree() -> PathBuf {
+        let n = TREE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!("archnav_scan_{}_{}", std::process::id(), n));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), "aaaa").unwrap();
+        std::fs::write(root.join("b.txt"), "bb").unwrap();
+        std::fs::write(root.join("sub").join("c.txt"), "c").unwrap();
+        root
+    }
+
+    fn queued(rx: &Receiver<DbOp>) -> Vec<DbOp> {
+        rx.try_iter().collect()
+    }
+
+    /// Regression: every periodic network rescan re-saved every entry with
+    /// INSERT OR REPLACE, so an unchanged 127k-entry share cost 127k row
+    /// rewrites (about 500 MiB of disk writes) every 5 minutes.
+    #[test]
+    fn rescan_of_unchanged_tree_queues_no_db_writes() {
+        let root = temp_tree();
+        let index = Arc::new(RwLock::new(TrigramIndex::new()));
+        let (tx, rx) = channel();
+
+        let first = scan_directory(&root, &index, &tx);
+        assert_eq!(first, 5, "root, sub, and three files");
+        assert_eq!(queued(&rx).len(), 5, "first scan saves every entry");
+
+        scan_directory(&root, &index, &tx);
+        assert_eq!(
+            queued(&rx).len(),
+            0,
+            "a rescan with nothing changed must not touch the database"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rescan_queues_one_metadata_update_for_a_changed_file() {
+        let root = temp_tree();
+        let index = Arc::new(RwLock::new(TrigramIndex::new()));
+        let (tx, rx) = channel();
+        scan_directory(&root, &index, &tx);
+        queued(&rx);
+
+        // Rewriting an existing file changes its size but not its directory.
+        std::fs::write(root.join("b.txt"), "longer").unwrap();
+        scan_directory(&root, &index, &tx);
+
+        let ops = queued(&rx);
+        assert_eq!(ops.len(), 1, "only the changed file is written");
+        assert!(
+            matches!(&ops[0], DbOp::UpdateFile(e) if e.path.ends_with("/b.txt") && e.size == 6),
+            "the change is an in-place metadata update, not a re-save"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

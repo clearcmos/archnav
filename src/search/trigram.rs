@@ -82,6 +82,17 @@ pub struct FileEntry {
     pub size: u64,
 }
 
+/// Outcome of [`TrigramIndex::upsert`].
+#[derive(Debug, PartialEq)]
+pub enum Upsert {
+    /// Already indexed with identical metadata; nothing to persist.
+    Unchanged(u32),
+    /// Already indexed; its metadata was updated in place.
+    Updated(u32),
+    /// Newly indexed under these trigrams.
+    Added(u32, Vec<[u8; 3]>),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bookmark {
     pub name: String,
@@ -177,13 +188,34 @@ impl TrigramIndex {
         mtime: i64,
         size: u64,
     ) -> (u32, Vec<[u8; 3]>) {
-        // Check if already exists — update metadata
+        match self.upsert(path, is_dir, mtime, size) {
+            Upsert::Unchanged(id) | Upsert::Updated(id) => (id, Vec::new()),
+            Upsert::Added(id, trigrams) => (id, trigrams),
+        }
+    }
+
+    /// True if `path` is indexed with exactly this metadata, so a rescan
+    /// has nothing to record for it.
+    pub fn is_current(&self, path: &str, is_dir: bool, mtime: i64, size: u64) -> bool {
+        self.path_to_id
+            .get(path)
+            .and_then(|id| self.files.get(id))
+            .is_some_and(|e| e.is_dir == is_dir && e.mtime == mtime && e.size == size)
+    }
+
+    /// Index `path`, or refresh its metadata if already indexed, and report
+    /// which of the two happened so the caller persists only what changed.
+    pub fn upsert(&mut self, path: String, is_dir: bool, mtime: i64, size: u64) -> Upsert {
         if let Some(&existing_id) = self.path_to_id.get(&path) {
             if let Some(entry) = self.files.get_mut(&existing_id) {
+                if entry.is_dir == is_dir && entry.mtime == mtime && entry.size == size {
+                    return Upsert::Unchanged(existing_id);
+                }
+                entry.is_dir = is_dir;
                 entry.mtime = mtime;
                 entry.size = size;
             }
-            return (existing_id, Vec::new());
+            return Upsert::Updated(existing_id);
         }
 
         let id = self.next_id;
@@ -205,7 +237,7 @@ impl TrigramIndex {
         self.files.insert(id, entry);
         self.path_to_id.insert(path, id);
 
-        (id, file_trigrams)
+        Upsert::Added(id, file_trigrams)
     }
 
     /// Add a file with pre-computed trigrams (used when loading from DB).
