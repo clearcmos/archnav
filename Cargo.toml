@@ -2,7 +2,7 @@
 name = "archnav"
 version = "0.1.0"
 edition = "2021"
-description = "Fast file navigator for KDE Wayland"
+description = "Keyboard-centric file navigator for KDE Wayland"
 license = "MIT"
 
 [dependencies]

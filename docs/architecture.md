@@ -8,9 +8,9 @@ memory, persists it in SQLite, and keeps it current with inotify for local
 paths and periodic rescans for network mounts.
 
 The design aims for:
-- **Instant response**: substring search is an intersection of trigram posting
-  lists, then a filter over the candidates
-- **Fast startup**: the posting lists are cached in SQLite and loaded directly
+- **Selective search**: a query's trigrams pick the candidate files, so a
+  specific query checks few paths (measured numbers below)
+- **Short startup**: the posting lists are cached in SQLite and loaded directly
 - **Few disk writes**: rescans and file events write only entries that changed
 - **One process**: no separate daemon; the window, index, and IPC servers share
   it, and the window can start hidden in the tray
@@ -66,8 +66,28 @@ Intersection: {1, 99}  <- candidates
 Final filter: the query must match the path (or, for folder:, the folder name)
 ```
 
-The same approach is used by plocate and Google Code Search: candidate lookup
-cost depends on the query, not on the number of indexed files.
+plocate and Google Code Search use the same approach. The cost is set by the
+posting lists the query touches: a rare run of characters narrows the
+candidates to a handful of files, while a very common word leaves many to
+check, and a query with no three-character run (`ab`, or `*.rs` alone) has no
+trigram to narrow with and checks every path.
+
+`archnav --benchmark` measures this against the real index, with the search
+cache cleared between runs. On 1.44M files (i7-13700K), medians were:
+
+| Query | Median | Results |
+|---|---|---|
+| `PKGBUILD` | 31 µs | 57 |
+| `screenshot` | 1.0 ms | 500 |
+| `main` | 2.7 ms | 500 |
+| `archnav` | 4.7 ms | 500 |
+| `package.json` | 29 ms | 500 |
+| `test` | 38 ms | 500 |
+| `config` | 72 ms | 500 |
+| `ab` | 401 ms | 500 |
+| `*.rs` | 406 ms | 500 |
+
+Results are capped at `max_results` (500 by default).
 
 `SearchCache` in `engine.rs` keeps the previous query's results. When the new
 query only extends the old one (typing `con`, then `conf`), it filters those

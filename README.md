@@ -1,18 +1,19 @@
 # archnav
 
-Fast, keyboard-centric file navigator for KDE Wayland with instant trigram-indexed search.
+Keyboard-centric file navigator for KDE Plasma on Wayland. It keeps a trigram
+index of every path under your bookmarks and searches it as you type.
 
 ![archnav Icon](archnav.svg)
 
 ## Features
 
-- **Instant search** - Trigram-indexed engine provides sub-10ms search across 600k+ files
-- **Smart previews** - Text, rendered Markdown, images, PDF and audio/video metadata, archive contents
+- **Trigram-indexed search** - On a 1.4M-file index (i7-13700K), specific queries return in a few milliseconds and very common words like `config` in tens of milliseconds; a query with no three-character run (`ab`, or `*.rs` alone) checks every path, about 0.4 s. When a keystroke only extends the query and the previous results were complete (under the result cap), archnav filters them instead of searching again. `archnav --benchmark` measures your own index
+- **Previews** - Text, rendered Markdown, images, PDF and audio/video metadata, archive contents
 - **Unified search** - Search all bookmarks simultaneously
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
 - **Results table** - File-type icons from the icon theme, click a header to sort, drag its edge to resize, right-click it to show or hide Path, Size, and Modified; widths and hidden columns are remembered. Click a path to open its folder
-- **Real-time updates** - inotify watches for instant file change detection
+- **Live updates** - inotify applies changes under local bookmarks as they happen (folders it cannot read are skipped); network mounts are rescanned every 5 minutes
 - **Keyboard-centric** - Arrow keys navigate, Enter opens, Esc closes
 - **System tray** - Persists in tray when closed, toggle with click or global hotkey
 - **Context menu** - Right-click for Open With, Copy, Cut, Rename, Delete, Properties
@@ -107,7 +108,7 @@ Set up a global shortcut for `archnav --toggle`:
 3. Command: `archnav --toggle`
 4. Set your preferred key (e.g., `Alt+``)
 
-### Smart Previews
+### Previews
 
 | File Type | Preview Shows |
 |-----------|--------------|

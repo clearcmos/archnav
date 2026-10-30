@@ -2,7 +2,7 @@
 pkgname=archnav-git
 pkgver=0.1.0.r0.0000000
 pkgrel=1
-pkgdesc='Fast keyboard-centric file navigator for KDE Wayland'
+pkgdesc='Keyboard-centric file navigator for KDE Wayland'
 arch=('x86_64')
 url='https://github.com/clearcmos/archnav'
 license=('MIT')

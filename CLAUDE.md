@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-archnav is a fast, keyboard-centric file navigator for KDE Wayland on Arch Linux. It provides instant search across hundreds of thousands of files using trigram indexing, with a Qt/QML GUI.
+archnav is a keyboard-centric file navigator for KDE Wayland on Arch Linux. It searches every path under the configured bookmarks through an in-memory trigram index, with a Qt/QML GUI.
 
 ## Architecture
 
@@ -116,14 +116,14 @@ A root-level `PKGBUILD` (`pkgname=archnav-git`) pulls from the github remote, bu
   `cargo update -p cxx -p cxx-gen`
 - **SQLite (rusqlite)**: Persistent index storage with posting list cache
 - **notify 8**: Cross-platform filesystem watcher (inotify on Linux)
-- **walkdir**: Fast recursive directory traversal
+- **walkdir**: Recursive directory traversal
 - **QML/Qt Quick + Kirigami**: Declarative UI on the Breeze desktop style (see UI: Breeze)
 - **Qt DBus**: For freedesktop FileManager1 integration (file properties dialog)
 - **Qt Widgets**: For native context menus (QMenu) and system tray (QSystemTrayIcon)
 
 ## Search Engine
 
-The search engine uses **trigram indexing** for instant substring matching:
+The search engine uses **trigram indexing** for substring matching:
 
 1. **Trigrams**: Each filename is split into 3-character overlapping sequences
 2. **Posting lists**: Map trigram -> set of file IDs containing it
@@ -132,7 +132,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 
 ### Performance Optimizations
 
-- **Posting list cache**: Pre-built posting lists stored in SQLite for instant startup
+- **Posting list cache**: Pre-built posting lists stored in SQLite, so startup loads them instead of rebuilding
 - **Async watcher setup**: Engine reports "ready" immediately after index load; inotify watches are set up in background thread
 - **Count-based cache validation**: Compares cached file count vs actual to detect staleness
 - **Write only what changed**: every scan path (initial scan, reconcile, network rescan, inotify) goes through `scanner::index_path`. An entry whose `is_dir`/mtime/size match the index costs one stat and a read-locked lookup, with no write lock and no DB op; changed metadata is an in-place `UPDATE` (`DbOp::UpdateFile`), and only new paths are inserted. Re-saving every entry on each 5-minute NAS rescan used to write about 500 MiB per pass.
@@ -148,7 +148,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 
 ## Key Features
 
-- **Instant search**: Sub-10ms search across 600k+ files via trigram index
+- **Trigram search**: measured with `--benchmark` on a 1.4M-file index (i7-13700K): specific queries in a few ms, very common words (`config`) in tens of ms, and queries without a 3-character run (`ab`, `*.rs` alone) about 0.4 s, since they check every path. Don't quote a single latency figure; it depends on the query
 - **Unified search**: Searches all bookmarks simultaneously by default
 - **Regex search**: `/pattern` for regex matching
 - **Fuzzy search**: `~query` for typo-tolerant matching
@@ -156,7 +156,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 - **Folders-only filter**: `folder:movies` or `folder: movies` to show directories whose own name matches (folders nested under a matching directory are excluded)
 - **Extension filtering**: `*.py query` to filter by file extension
 - **Sort options**: Recent, Oldest, Name A-Z/Z-A, Largest, Smallest, Path
-- **Smart previews**: Text, rendered Markdown, images, PDF and audio/video metadata, archive contents
+- **Previews**: Text, rendered Markdown, images, PDF and audio/video metadata, archive contents
 - **Real-time updates**: inotify watches for file changes (local paths only)
 - **Network mount support**: Periodic rescanning for network paths (marked `is_network`)
 - **Keyboard-centric**: Arrow keys navigate, Enter opens, Esc hides to tray

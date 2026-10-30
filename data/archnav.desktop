@@ -2,7 +2,7 @@
 Type=Application
 Name=archnav
 GenericName=File Navigator
-Comment=Fast keyboard-centric file navigator
+Comment=Keyboard-centric file navigator with indexed search
 Exec=archnav
 Icon=archnav
 Terminal=false
