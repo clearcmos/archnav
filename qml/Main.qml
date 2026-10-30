@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Window
+import org.kde.kirigami as Kirigami
 
 import org.archnav.app
 
@@ -18,6 +19,7 @@ ApplicationWindow {
     // Hide to tray instead of quitting when window is closed
     onClosing: function(close) {
         close.accepted = false
+        saveLayoutNow()
         root.hide()
     }
 
@@ -25,7 +27,9 @@ ApplicationWindow {
     onVisibleChanged: engine.set_window_visible(root.visible)
 
     property bool previewVisible: false
-    property bool helpVisible: false
+    // True from a keystroke until its results land, so the empty-list
+    // placeholder does not flash "No matching files" while a search runs
+    property bool searching: false
     property int currentSortIndex: 0  // 0=MtimeDesc, 1=MtimeAsc, 2=NameAsc, 3=NameDesc, 4=SizeDesc, 5=SizeAsc, 6=PathAsc, 7=Frecency
     property bool frecencyMode: false  // When true, sort by frecency (most used first)
 
@@ -34,13 +38,6 @@ ApplicationWindow {
     property int pathSortState: 0
     property int sizeSortState: 0
     property int dateSortState: 2  // Default: date descending (recent first)
-
-    // Scaled column widths (user-adjustable via drag)
-    property int nameColumnWidth: Math.round(200 * Style.zoomFactor)
-    property int pathColumnWidth: Math.round(400 * Style.zoomFactor)
-    property int sizeColumnWidth: Math.round(80 * Style.zoomFactor)
-    property int dateColumnWidth: Math.round(150 * Style.zoomFactor)
-    property int tagsColumnWidth: Math.round(180 * Style.zoomFactor)
 
     // Rust bridge objects
     SearchEngine {
@@ -101,6 +98,7 @@ ApplicationWindow {
     }
 
     function updateResults() {
+        searching = false
         resultsModel.clear()
         for (var i = 0; i < engine.result_count; i++) {
             var p = engine.result_path_at(i)
@@ -109,6 +107,7 @@ ApplicationWindow {
                 path: p,
                 isDir: d,
                 filename: engine.result_filename_at(i),
+                iconName: engine.result_icon_at(i),
                 mtime: engine.result_mtime_at(i),
                 fileSize: engine.result_size_at(i),
                 tags: tagBridge.tags_for(p, d).toString()
@@ -225,6 +224,28 @@ ApplicationWindow {
         }
     }
 
+    function sortByColumn(key) {
+        if (key === "name") sortByName()
+        else if (key === "path") sortByPath()
+        else if (key === "size") sortBySize()
+        else if (key === "date") sortByDate()
+    }
+
+    // Column widths and visibility persist to config.json, debounced so a
+    // drag writes once when it ends rather than on every pixel
+    Timer {
+        id: layoutSaveTimer
+        interval: Kirigami.Units.humanMoment
+        onTriggered: engine.save_column_layout(resultsList.layoutJson())
+    }
+
+    function saveLayoutNow() {
+        if (layoutSaveTimer.running) {
+            layoutSaveTimer.stop()
+            engine.save_column_layout(resultsList.layoutJson())
+        }
+    }
+
     function toggleFrecency() {
         frecencyMode = !frecencyMode
         if (frecencyMode) {
@@ -249,6 +270,7 @@ ApplicationWindow {
             if (searchBar.text.length > 0) {
                 engine.search(searchBar.text, currentSortIndex)
             } else {
+                searching = false
                 resultsModel.clear()
                 resultsList.currentIndex = -1
                 preview.clear_preview()
@@ -279,122 +301,19 @@ ApplicationWindow {
         anchors.fill: parent
         spacing: 0
 
-        // Search bar area
-        Rectangle {
+        SearchBar {
+            id: searchBar
             Layout.fillWidth: true
-            Layout.preferredHeight: Math.round(48 * Style.zoomFactor)
-            color: Style.bgPrimary
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.margins: Style.marginNormal
-                spacing: Style.marginNormal
-
-                SearchBar {
-                    id: searchBar
-                    Layout.fillWidth: true
-                    onTextChanged: searchDebounce.restart()
-
-                    Keys.onDownPressed: resultsList.moveDown()
-                    Keys.onUpPressed: resultsList.moveUp()
-                    Keys.onReturnPressed: openSelected()
-                    Keys.onEnterPressed: openSelected()
-                }
-            }
-        }
-
-        // Header row
-        Rectangle {
-            Layout.fillWidth: true
-            Layout.preferredHeight: Style.headerHeight
-            color: Style.headerBg
-
-            Rectangle {
-                anchors.bottom: parent.bottom
-                width: parent.width
-                height: 1
-                color: Style.headerBorder
+            Layout.margins: Style.marginNormal
+            onTextChanged: {
+                searching = text.length > 0
+                searchDebounce.restart()
             }
 
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: Style.marginNormal
-                anchors.rightMargin: Style.marginNormal
-                spacing: 0
-
-                // Name header
-                HeaderButton {
-                    id: nameHeader
-                    Layout.preferredWidth: nameColumnWidth
-                    text: "Name"
-                    sortState: nameSortState
-                    resizable: true
-                    minWidth: 80
-                    onClicked: sortByName()
-                    onWidthChangeRequested: function(newWidth) {
-                        nameColumnWidth = newWidth
-                    }
-                }
-
-                // Path header
-                HeaderButton {
-                    id: pathHeader
-                    Layout.preferredWidth: pathColumnWidth
-                    text: "Path"
-                    sortState: pathSortState
-                    resizable: true
-                    minWidth: 100
-                    onClicked: sortByPath()
-                    onWidthChangeRequested: function(newWidth) {
-                        pathColumnWidth = newWidth
-                    }
-                }
-
-                // Size header
-                HeaderButton {
-                    id: sizeHeader
-                    Layout.preferredWidth: sizeColumnWidth
-                    text: "Size"
-                    sortState: sizeSortState
-                    alignment: Text.AlignRight
-                    resizable: true
-                    minWidth: 60
-                    onClicked: sortBySize()
-                    onWidthChangeRequested: function(newWidth) {
-                        sizeColumnWidth = newWidth
-                    }
-                }
-
-                // Date Modified header
-                HeaderButton {
-                    id: dateHeader
-                    Layout.preferredWidth: dateColumnWidth
-                    text: "Modified"
-                    sortState: dateSortState
-                    alignment: Text.AlignRight
-                    resizable: true
-                    minWidth: 100
-                    onClicked: sortByDate()
-                    onWidthChangeRequested: function(newWidth) {
-                        dateColumnWidth = newWidth
-                    }
-                }
-
-                // Tags header (last column - not resizable, not sortable:
-                // tags live in tagdex stores, outside the engine's sorters)
-                HeaderButton {
-                    id: tagsHeader
-                    Layout.preferredWidth: tagsColumnWidth
-                    text: "Tags"
-                    sortState: 0
-                    resizable: false
-                }
-
-                // Flexible spacer to fill remaining space after all columns
-                Item {
-                    Layout.fillWidth: true
-                }
-            }
+            Keys.onDownPressed: resultsList.moveDown()
+            Keys.onUpPressed: resultsList.moveUp()
+            Keys.onReturnPressed: openSelected()
+            Keys.onEnterPressed: openSelected()
         }
 
         // Content area: results + preview
@@ -407,13 +326,21 @@ ApplicationWindow {
             ResultsList {
                 id: resultsList
                 SplitView.preferredWidth: previewVisible ? parent.width * 0.55 : parent.width
-                SplitView.minimumWidth: 400
+                SplitView.minimumWidth: Kirigami.Units.gridUnit * 22
                 model: resultsModel
-                nameColumnWidth: root.nameColumnWidth
-                pathColumnWidth: root.pathColumnWidth
-                sizeColumnWidth: root.sizeColumnWidth
-                dateColumnWidth: root.dateColumnWidth
-                tagsColumnWidth: root.tagsColumnWidth
+                nameSortState: root.nameSortState
+                pathSortState: root.pathSortState
+                sizeSortState: root.sizeSortState
+                dateSortState: root.dateSortState
+
+                placeholderIcon: !engine.engine_ready || searching ? ""
+                    : searchBar.text.length === 0 ? "search" : "edit-none"
+                placeholderText: !engine.engine_ready ? "Loading index…"
+                    : searching ? ""
+                    : searchBar.text.length === 0 ? "Type to search" : "No matching files"
+                placeholderExplanation: engine.engine_ready && !searching && searchBar.text.length === 0
+                    ? Number(engine.total_indexed).toLocaleString(Qt.locale(), "f", 0) + " files indexed"
+                    : ""
 
                 onCurrentIndexChanged: {
                     updatePreview()
@@ -423,75 +350,68 @@ ApplicationWindow {
                 onContextMenuRequested: function(path, globalX, globalY) {
                     engine.show_context_menu(path, globalX, globalY)
                 }
+                onOpenFolderRequested: function(path) {
+                    engine.open_folder(path)
+                }
+                onHeaderClicked: function(key) {
+                    sortByColumn(key)
+                }
+                onLayoutEdited: layoutSaveTimer.restart()
             }
 
             PreviewPanel {
                 id: previewPanel
                 SplitView.preferredWidth: parent.width * 0.45
-                SplitView.minimumWidth: 200
+                SplitView.minimumWidth: Kirigami.Units.gridUnit * 11
                 visible: previewVisible
                 previewBridge: preview
             }
         }
 
         // Status bar
-        Rectangle {
+        Kirigami.Separator {
             Layout.fillWidth: true
-            Layout.preferredHeight: Math.round(26 * Style.zoomFactor)
-            color: Style.bgPrimary
+        }
 
-            Rectangle {
-                anchors.top: parent.top
-                width: parent.width
-                height: 1
-                color: Style.headerBorder
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.leftMargin: Style.marginNormal
+            Layout.rightMargin: Style.marginNormal
+            Layout.topMargin: Style.marginSmall
+            Layout.bottomMargin: Style.marginSmall
+            spacing: Style.marginLarge
+
+            Label {
+                text: "Frecency"
+                color: Style.accentBlue
+                font.pointSize: Style.fontSizeSmall
+                font.bold: true
+                visible: frecencyMode
             }
 
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: Style.marginNormal
-                anchors.rightMargin: Style.marginNormal
+            // Tags of the selected file (from its tag store, if any)
+            Label {
+                text: "Tags: " + tagBridge.tags
+                font.pointSize: Style.fontSizeSmall
+                textFormat: Text.PlainText
+                visible: tagBridge.tags.toString() !== ""
+                elide: Text.ElideRight
+                Layout.maximumWidth: Math.round(parent.width * 0.5)
+            }
 
-                Label {
-                    text: engine.result_count + " items"
-                    color: Style.textDim
-                    font.pixelSize: Style.fontSizeSmall
-                }
+            Item { Layout.fillWidth: true }
 
-                Label {
-                    text: "Frecency"
-                    color: Style.accentBlue
-                    font.pixelSize: Style.fontSizeSmall
-                    font.bold: true
-                    visible: frecencyMode
-                }
+            Label {
+                text: engine.status_text
+                opacity: 0.75
+                font.pointSize: Style.fontSizeSmall
+            }
 
-                // Tags of the selected file (from its tagdex store, if any)
-                Label {
-                    text: "Tags: " + tagBridge.tags
-                    color: Style.accentBlue
-                    font.pixelSize: Style.fontSizeSmall
-                    visible: tagBridge.tags.toString() !== ""
-                    elide: Text.ElideRight
-                    Layout.maximumWidth: Math.round(parent.width * 0.5)
-                }
-
-                Item { Layout.fillWidth: true }
-
-                Label {
-                    text: engine.status_text
-                    color: Style.textDim
-                    font.pixelSize: Style.fontSizeSmall
-                }
-
-                Item { width: Style.marginLarge }
-
-                Label {
-                    text: Math.round(Style.zoomFactor * 100) + "%"
-                    color: Style.textDim
-                    font.pixelSize: Style.fontSizeSmall
-                    visible: Style.zoomFactor !== 1.0
-                }
+            Label {
+                text: Math.round(Style.zoomFactor * 100) + "%"
+                opacity: 0.75
+                font.pointSize: Style.fontSizeSmall
+                visible: Style.zoomFactor !== 1.0
             }
         }
     }
@@ -536,7 +456,7 @@ ApplicationWindow {
     // Help overlay
     Shortcut {
         sequence: "F1"
-        onActivated: helpVisible = !helpVisible
+        onActivated: helpPopup.visible ? helpPopup.close() : helpPopup.open()
     }
 
     // Zoom controls
@@ -558,6 +478,7 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
+        resultsList.applyLayout(engine.column_layout())
         engine.initialize()
         // In --hidden mode (login autostart), stay in the tray: the index still
         // loads in the background and the toggle socket still comes up, but no
@@ -568,238 +489,107 @@ ApplicationWindow {
         }
     }
 
-    // Help overlay - press F1 to toggle, any key to dismiss
-    Rectangle {
-        id: helpOverlay
-        anchors.fill: parent
-        color: Qt.rgba(0, 0, 0, 0.6)
-        visible: helpVisible
-        z: 100
+    // Keyboard shortcuts (F1); any key closes it
+    Popup {
+        id: helpPopup
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        padding: Kirigami.Units.gridUnit
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
-        MouseArea {
-            anchors.fill: parent
-            onClicked: helpVisible = false
-        }
+        contentItem: ColumnLayout {
+            focus: true
+            spacing: Style.marginLarge
 
-        // Catch any key to dismiss
-        Keys.onPressed: function(event) {
-            if (event.key !== Qt.Key_F1) {
-                helpVisible = false
-                event.accepted = true
-            }
-        }
-
-        focus: helpVisible
-
-        Rectangle {
-            anchors.centerIn: parent
-            width: Math.round(520 * Style.zoomFactor)
-            height: helpColumn.height + Math.round(48 * Style.zoomFactor)
-            color: Style.bgPrimary
-            border.color: Style.borderDefault
-            border.width: 1
-            radius: Math.round(8 * Style.zoomFactor)
-
-            ColumnLayout {
-                id: helpColumn
-                anchors.top: parent.top
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.margins: Math.round(24 * Style.zoomFactor)
-                spacing: Math.round(16 * Style.zoomFactor)
-
-                Label {
-                    text: "Keyboard Shortcuts"
-                    color: Style.textPrimary
-                    font.pixelSize: Style.fontSizeLarge
-                    font.bold: true
-                    Layout.alignment: Qt.AlignHCenter
+            Keys.onPressed: function(event) {
+                if (event.key !== Qt.Key_F1) {
+                    helpPopup.close()
+                    event.accepted = true
                 }
-
-                GridLayout {
-                    columns: 2
-                    columnSpacing: Math.round(24 * Style.zoomFactor)
-                    rowSpacing: Math.round(6 * Style.zoomFactor)
-                    Layout.fillWidth: true
-
-                    // Navigation
-                    Label { text: "Up / Down"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Navigate results"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "Enter"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Open file or folder"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "Ctrl+O"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Open containing folder"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "Right-click"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Context menu"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    // Separator
-                    Item { Layout.columnSpan: 2; Layout.preferredHeight: Math.round(4 * Style.zoomFactor) }
-
-                    // View
-                    Label { text: "Ctrl+P"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Toggle preview pane"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "Ctrl+Shift+F"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Toggle frecency sort"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "Ctrl+R"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Rescan all bookmarks"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "Ctrl+B"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Manage bookmarks"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "Ctrl+T"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Edit tags of selected file"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "t: a b"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Filter by tag a OR b (t: alone = any tagged file)"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "t: a&b"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Filter by tag a AND b (also: t: a AND b)"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    // Separator
-                    Item { Layout.columnSpan: 2; Layout.preferredHeight: Math.round(4 * Style.zoomFactor) }
-
-                    // Zoom
-                    Label { text: "Ctrl+= / Ctrl+-"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Zoom in / out"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "Ctrl+0"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Reset zoom"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "Ctrl+Scroll"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Zoom in / out"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    // Separator
-                    Item { Layout.columnSpan: 2; Layout.preferredHeight: Math.round(4 * Style.zoomFactor) }
-
-                    // Window
-                    Label { text: "Esc"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Hide to tray"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-
-                    Label { text: "F1"; color: Style.accentBlue; font.pixelSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                    Label { text: "Toggle this help"; color: Style.textPrimary; font.pixelSize: Style.fontSizeNormal }
-                }
-
-                Label {
-                    text: "Press any key to close"
-                    color: Style.textDim
-                    font.pixelSize: Style.fontSizeSmall
-                    Layout.alignment: Qt.AlignHCenter
-                }
-            }
-        }
-    }
-
-    // HeaderButton component for clickable column headers
-    component HeaderButton: Item {
-        id: headerItem
-        property string text: ""
-        property int sortState: 0  // 0=none, 1=asc, 2=desc
-        property int alignment: Text.AlignLeft
-        property bool resizable: false
-        property int minWidth: 60
-
-        signal clicked()
-        signal widthChangeRequested(int newWidth)
-
-        implicitHeight: parent.height
-        clip: false  // Allow resize handle to extend beyond bounds
-
-        MouseArea {
-            anchors.fill: parent
-            anchors.rightMargin: resizable ? 8 : 0  // Leave space for resize handle
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: headerItem.clicked()
-            z: 1
-
-            Rectangle {
-                anchors.fill: parent
-                color: parent.containsMouse ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
-            }
-        }
-
-        RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: Style.marginSmall
-            anchors.rightMargin: Style.marginSmall
-            spacing: Style.marginSmall
-
-            Item {
-                Layout.fillWidth: alignment !== Text.AlignLeft
             }
 
             Label {
-                text: headerItem.text
-                color: Style.headerText
-                font.pixelSize: Style.fontSizeNormal
-                font.bold: sortState !== 0
+                text: "Keyboard Shortcuts"
+                font.pointSize: Style.fontSizeLarge
+                font.bold: true
+                Layout.alignment: Qt.AlignHCenter
+            }
+
+            GridLayout {
+                columns: 2
+                columnSpacing: Math.round(Kirigami.Units.gridUnit * Style.zoomFactor)
+                rowSpacing: Style.marginSmall
+                Layout.fillWidth: true
+
+                // Navigation
+                Label { text: "Up / Down"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Navigate results"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "Enter"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Open file or folder"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "Ctrl+O"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Open containing folder"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "Right-click"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Context menu"; font.pointSize: Style.fontSizeNormal }
+
+                // Separator
+                Item { Layout.columnSpan: 2; Layout.preferredHeight: Style.marginSmall }
+
+                // View
+                Label { text: "Ctrl+P"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Toggle preview pane"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "Ctrl+Shift+F"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Toggle frecency sort"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "Ctrl+R"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Rescan all bookmarks"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "Ctrl+B"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Manage bookmarks"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "Ctrl+T"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Edit tags of selected file"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "t: a b"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Filter by tag a OR b (t: alone = any tagged file)"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "t: a&b"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Filter by tag a AND b (also: t: a AND b)"; font.pointSize: Style.fontSizeNormal }
+
+                // Separator
+                Item { Layout.columnSpan: 2; Layout.preferredHeight: Style.marginSmall }
+
+                // Zoom
+                Label { text: "Ctrl+= / Ctrl+-"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Zoom in / out"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "Ctrl+0"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Reset zoom"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "Ctrl+Scroll"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Zoom in / out"; font.pointSize: Style.fontSizeNormal }
+
+                // Separator
+                Item { Layout.columnSpan: 2; Layout.preferredHeight: Style.marginSmall }
+
+                // Window
+                Label { text: "Esc"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Hide to tray"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "F1"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Toggle this help"; font.pointSize: Style.fontSizeNormal }
             }
 
             Label {
-                text: sortState === 1 ? "\u25B2" : (sortState === 2 ? "\u25BC" : "")
-                color: Style.accentBlue
-                font.pixelSize: Math.round(10 * Style.zoomFactor)
-                visible: sortState !== 0
-            }
-
-            Item {
-                Layout.fillWidth: alignment === Text.AlignLeft
-            }
-        }
-
-        // Right border (separator line)
-        Rectangle {
-            id: separatorLine
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            width: 1
-            color: Style.headerBorder
-            z: 2
-        }
-
-        // Resize handle (draggable area centered on separator)
-        MouseArea {
-            id: resizeHandle
-            visible: resizable
-            anchors.horizontalCenter: separatorLine.horizontalCenter
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            width: 10
-            cursorShape: Qt.SplitHCursor
-            hoverEnabled: true
-            z: 3  // Above everything else
-
-            property real startGlobalX: 0
-            property int startWidth: 0
-
-            onPressed: function(mouse) {
-                var global = mapToGlobal(mouse.x, mouse.y)
-                startGlobalX = global.x
-                startWidth = headerItem.width
-            }
-
-            onPositionChanged: function(mouse) {
-                if (pressed) {
-                    var global = mapToGlobal(mouse.x, mouse.y)
-                    var totalDelta = global.x - startGlobalX
-                    var newWidth = Math.max(minWidth, startWidth + totalDelta)
-                    headerItem.widthChangeRequested(newWidth)
-                }
-            }
-
-            // Visual feedback on hover - centered highlight
-            Rectangle {
-                anchors.centerIn: parent
-                width: 5
-                height: parent.height
-                color: parent.containsMouse || parent.pressed ? Qt.rgba(1, 1, 1, 0.25) : "transparent"
-                radius: 2
+                text: "Press any key to close"
+                opacity: 0.75
+                font.pointSize: Style.fontSizeSmall
+                Layout.alignment: Qt.AlignHCenter
             }
         }
     }

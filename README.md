@@ -11,20 +11,21 @@ Fast, keyboard-centric file navigator for KDE Wayland with instant trigram-index
 - **Unified search** - Search all bookmarks simultaneously
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
+- **Results table** - File-type icons from the icon theme, click a header to sort, drag its edge to resize, right-click it to show or hide columns; widths and hidden columns are remembered. Click a path to open its folder
 - **File tags** - built-in tag system that works where xattrs do not (NAS/CIFS mounts): tags column in results, Ctrl+T tag editor, `t:` search filter, and a full `archnav tag` CLI with rename-surviving repair
 - **Real-time updates** - inotify watches for instant file change detection
 - **Keyboard-centric** - Arrow keys navigate, Enter opens, Esc closes
 - **System tray** - Persists in tray when closed, toggle with click or global hotkey
 - **Context menu** - Right-click for Open With, Copy, Cut, Rename, Delete, Properties
 - **Zoom support** - Ctrl+=/- to scale UI
-- **Wayland native** - Works on KDE Plasma 6 Wayland
+- **Wayland native** - Works on KDE Plasma 6 Wayland; colors, fonts, and spacing follow the KDE theme (Kirigami and the Breeze desktop style)
 
 ## Dependencies
 
 Install from the Arch repos:
 
 ```bash
-pacman -S qt6-base qt6-declarative kio kservice kcoreaddons
+pacman -S qt6-base qt6-declarative kirigami qqc2-desktop-style kio kservice kcoreaddons
 pacman -S ffmpeg poppler xdg-utils dolphin systemsettings p7zip
 ```
 
@@ -158,11 +159,15 @@ Config stored at `~/.config/archnav/config.json`:
   ],
   "max_results": 500,
   "toggle_hotkey": "Alt+`",
-  "exclude_paths": ["~/Downloads", "/mnt/scratch"]
+  "exclude_paths": ["~/Downloads", "/mnt/scratch"],
+  "columns": {"widths": {"path": 300, "size": 80, "date": 140, "tags": 120}, "hidden": []}
 }
 ```
 
 - `max_results` caps how many results a search returns (hard cap 2000)
+- `columns` is written by the window when a column is resized or hidden. Name
+  fills the width the others leave until a separator is dragged, then keeps
+  its own width; Reset Columns in the header's right-click menu restores that
 - `exclude_paths` lists locations to exclude from indexing, recursively;
   entries are absolute paths with an optional leading `~`
 - A config file with a syntax error is left untouched at startup (defaults are

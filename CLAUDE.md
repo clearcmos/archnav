@@ -47,6 +47,9 @@ src/
 ├── system_tray.cpp      # QSystemTrayIcon with menu (Qt/C++)
 ├── system_tray.h        # System tray header
 ├── file_opener.rs       # Rust FFI wrapper for KIO file opener
+├── mime_icon.rs         # Rust FFI wrapper: theme icon name for a result's file type
+├── mime_icon.cpp        # QMimeDatabase name-only lookup + QIcon theme check
+├── mime_icon.h          # MIME icon header
 ├── file_opener.cpp      # KIO::OpenUrlJob file opener (proper Wayland focus)
 ├── file_opener.h        # File opener header
 ├── qt_debug_handler.cpp # Qt message handler redirecting to Rust tracing
@@ -57,12 +60,12 @@ data/
 
 qml/
 ├── Main.qml             # Main window, keyboard shortcuts, layout
-├── SearchBar.qml        # Search input field
-├── ResultsList.qml      # File results ListView with delegates
+├── SearchBar.qml        # Kirigami.SearchField
+├── ResultsList.qml      # Column header + results list (columns, sort arrows, path links, placeholder)
 ├── PreviewPanel.qml     # Preview pane (text, images, audio art, metadata)
 ├── BookmarkDialog.qml   # Bookmark management dialog (Ctrl+B)
 ├── TagDialog.qml        # Tag editor dialog (Ctrl+T)
-└── Style.qml            # Singleton with colors, fonts, spacing
+└── Style.qml            # Singleton: theme colors, fonts, spacing scaled by zoom
 ```
 
 ## Development Commands
@@ -98,7 +101,7 @@ LLVM_COV=/usr/bin/llvm-cov LLVM_PROFDATA=/usr/bin/llvm-profdata cargo llvm-cov -
 
 ## Dependencies
 
-Runtime: `qt6-base qt6-declarative kio kservice kcoreaddons ffmpeg poppler xdg-utils dolphin systemsettings p7zip`
+Runtime: `qt6-base qt6-declarative kirigami qqc2-desktop-style kio kservice kcoreaddons ffmpeg poppler xdg-utils dolphin systemsettings p7zip`
 
 Build: `rust pkg-config`
 
@@ -141,7 +144,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 
 ## Engineering Standard (tier 2: public repo)
 
-- **Tests**: every pure-logic module carries an in-module `#[cfg(test)]` block. Runtime-bound modules are exempt from direct tests and excluded from the coverage gate: `bridge/*` (Qt objects need a running QML engine), `main.rs` (entry point), `ipc.rs` and `toggle.rs` (live unix socket + engine), `search/watcher.rs` (inotify threads), `search/integrity.rs` (periodic threads), `context_menu`/`system_tray`/`file_opener`/`qt_*` (C++/FFI glue). `preview/media.rs` splits parse-vs-run: JSON formatting is tested against captured ffprobe output; the subprocess paths are exempt.
+- **Tests**: every pure-logic module carries an in-module `#[cfg(test)]` block. Runtime-bound modules are exempt from direct tests and excluded from the coverage gate: `bridge/*` (Qt objects need a running QML engine), `main.rs` (entry point), `ipc.rs` and `toggle.rs` (live unix socket + engine), `search/watcher.rs` (inotify threads), `search/integrity.rs` (periodic threads), `context_menu`/`system_tray`/`file_opener`/`mime_icon`/`qt_*` (C++/FFI glue). `preview/media.rs` splits parse-vs-run: JSON formatting is tested against captured ffprobe output; the subprocess paths are exempt.
 - **Coverage**: cargo-llvm-cov, gated in CI over the non-exempt set (`--ignore-filename-regex` in ci.yml mirrors the exemption list above). Gate: 70% lines (introduced at 60 with 66% measured, 2026-07-19; raised to 70 with 74% measured after the native tag engine landed, 2026-07-20). Ratchets upward, never down. Biggest headroom: `search/engine.rs` (thread/db orchestration) and `search/scanner.rs`.
 - **Supply chain**: Cargo.lock committed; cargo dependency updates are deliberate and manual, advisory-driven (see the chore(deps) commit trail). dependabot only maintains the pinned GitHub Actions SHAs.
 - **Changelog**: none; git history is the record.
@@ -213,9 +216,18 @@ archnav owns a complete native tag system (format spec: docs/tagstore-format.md;
   ],
   "max_results": 500,
   "toggle_hotkey": "Alt+`",
-  "exclude_paths": ["~/Downloads", "/mnt/scratch"]
+  "exclude_paths": ["~/Downloads", "/mnt/scratch"],
+  "columns": {"widths": {"path": 300, "size": 80, "date": 140, "tags": 120}, "hidden": ["tags"]}
 }
 ```
+
+`columns` is written by the window (debounced, and on hide) when a column is
+resized or hidden from the header's right-click menu. Widths are unzoomed
+pixels. Name has no entry while it fills the width the others leave (the
+default, and after Reset Columns); the first separator drag stores its
+width, the way Dolphin stops sizing columns automatically once one is
+resized by hand. `AppConfig::save_columns` refuses to write over a config that
+does not parse, like `load`.
 
 `max_results` caps how many results a search returns (default 500, hard cap
 2000 via `MAX_RESULTS` in trigram.rs).
@@ -247,6 +259,46 @@ User-configurable recursive locations via `exclude_paths` in `config.json`
 `scanner.rs`, which gates the initial scan, reconcile, network rescans, and the
 live inotify watcher. The user list is installed once at startup via
 `scanner::set_exclude_paths` and matched by `is_user_excluded`.
+
+## UI: Breeze
+
+The window follows KDE's Breeze language and Human Interface Guidelines:
+every color, font, size, and spacing comes from the theme, never a literal,
+and archnav's zoom (Ctrl+=/-) only multiplies them.
+
+- `Style.qml` derives its tokens from `Kirigami.Theme`, `Kirigami.Units`, and
+  `SystemPalette`. A singleton `QtObject` has no item for Kirigami's attached
+  theme to bind to, so it reads the theme through `themeProbe`, an unparented
+  `Item`. Fonts are point sizes (`font.pointSize: Style.fontSize*`), so the
+  system font settings apply.
+- Use `Label`, never `QtQuick.Text` (it ignores the system font). Keep the
+  controls' own backgrounds; replace only a `contentItem` when a control does
+  not fit (the header cells are flat `ToolButton`s with a custom content item).
+- Result rows are `ItemDelegate`s with the desktop style's own background
+  (`highlighted` for the selection, `Kirigami.StyleHints.useAlternateBackgroundColor`
+  for alternating rows), inside a list using the `View` color set.
+- File-type icons come from `mime_icon.cpp`: `QMimeDatabase::mimeTypesForFileName`
+  matches on the name only. `mimeTypeForFile` would stat and may read every
+  result, a network round trip each on a NAS mount. Breeze draws file-type
+  icons in color from 22 px (`smallMedium`); its folder icons stay monochrome
+  below 32 px, as in Dolphin.
+- Column resizing follows Dolphin: a drag moves only the separator under the
+  pointer, and the columns after it shift. The drag handles live in a layer
+  above the header cells, centered on each separator. With Name filling on
+  the left, resizing a column by changing its own width leaves the dragged
+  separator still and moves the one on its left instead, which is why the
+  first drag fixes Name's width. There is no horizontal scrolling, so
+  widening uses free space first, then narrows the columns after it from
+  the rightmost inward, each down to its minimum.
+- Header and row cells pin `Layout.minimumWidth`/`maximumWidth` to their
+  preferred width. Without that, a list narrower than its columns (preview
+  pane open) shrinks header cells and row cells differently and the columns
+  stop lining up.
+- A `Dialog` whose content changes height (an `InlineMessage` appearing) takes
+  the layout as its `contentItem`; a child with `anchors.fill: parent` does not
+  resize the dialog and the message runs under the buttons.
+- Check a UI change under Breeze Light as well as Breeze Dark
+  (`plasma-apply-colorscheme BreezeLight`, then back).
 
 ## QML/Rust Bridge
 

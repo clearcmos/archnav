@@ -91,6 +91,9 @@ fn main() {
             // File opener using KIO::OpenUrlJob for proper Wayland focus
             cc.file("src/file_opener.cpp");
 
+            // Theme icon names for results, from the MIME database
+            cc.file("src/mime_icon.cpp");
+
             // System tray with GlobalShortcuts portal
             cc.file("src/system_tray.cpp");
 

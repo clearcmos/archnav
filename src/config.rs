@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
@@ -27,6 +28,20 @@ pub struct AppConfig {
     /// path equals or sits under any entry. Empty by default.
     #[serde(default)]
     pub exclude_paths: Vec<String>,
+    /// Results table layout, restored when the window starts.
+    #[serde(default)]
+    pub columns: ColumnLayout,
+}
+
+/// Widths and visibility of the results columns, keyed by column ("path",
+/// "size", "date", "tags"). Widths are unzoomed pixels. Name has no entry:
+/// it is always shown and fills the width the other columns leave.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ColumnLayout {
+    #[serde(default)]
+    pub widths: BTreeMap<String, i32>,
+    #[serde(default)]
+    pub hidden: Vec<String>,
 }
 
 fn default_max_results() -> i32 {
@@ -52,6 +67,7 @@ impl Default for AppConfig {
             max_results: default_max_results(),
             toggle_hotkey: default_toggle_hotkey(),
             exclude_paths: Vec::new(),
+            columns: ColumnLayout::default(),
         }
     }
 }
@@ -99,6 +115,31 @@ impl AppConfig {
         let config = Self::default();
         config.save();
         config
+    }
+
+    /// Store a new column layout. Skipped, with a warning, when the config
+    /// file exists but does not parse: saving over it would replace the
+    /// user's bookmarks and excludes with defaults, which `load` avoids too.
+    pub fn save_columns(columns: ColumnLayout) {
+        let path = Self::config_path();
+        let mut config = if path.exists() {
+            match std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|s| serde_json::from_str::<Self>(&s).map_err(|e| e.to_string()))
+            {
+                Ok(config) => config,
+                Err(e) => {
+                    warn!("Not saving column layout: config unreadable ({})", e);
+                    return;
+                }
+            }
+        } else {
+            Self::default()
+        };
+        if config.columns != columns {
+            config.columns = columns;
+            config.save();
+        }
     }
 
     /// Save config to disk.
@@ -188,6 +229,23 @@ mod tests {
     fn trims_trailing_slashes_and_blanks() {
         let out = cfg_with(&["/mnt/scratch/", "  ", "/data//"]).expanded_exclude_paths();
         assert_eq!(out, vec!["/mnt/scratch".to_string(), "/data".to_string()]);
+    }
+
+    #[test]
+    fn config_without_columns_parses_with_an_empty_layout() {
+        let config: AppConfig = serde_json::from_str(r#"{"bookmarks": []}"#).unwrap();
+        assert_eq!(config.columns, ColumnLayout::default());
+    }
+
+    #[test]
+    fn column_layout_round_trips_through_json() {
+        let layout: ColumnLayout =
+            serde_json::from_str(r#"{"widths": {"path": 320, "size": 90}, "hidden": ["tags"]}"#)
+                .unwrap();
+        assert_eq!(layout.widths.get("path"), Some(&320));
+        assert_eq!(layout.hidden, vec!["tags".to_string()]);
+        let json = serde_json::to_string(&layout).unwrap();
+        assert_eq!(serde_json::from_str::<ColumnLayout>(&json).unwrap(), layout);
     }
 
     #[test]

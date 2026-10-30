@@ -8,6 +8,8 @@ url='https://github.com/clearcmos/archnav'
 license=('MIT')
 depends=(qt6-base
          qt6-declarative
+         kirigami
+         qqc2-desktop-style
          kio
          kservice
          kcoreaddons

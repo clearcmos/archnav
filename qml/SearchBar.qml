@@ -1,20 +1,12 @@
 import QtQuick
-import QtQuick.Controls
+import org.kde.kirigami as Kirigami
 
-TextField {
-    id: searchField
-    placeholderText: "Search files..."
-    placeholderTextColor: Style.textDim
-    font.pixelSize: Style.fontSizeLarge
-    color: Style.textPrimary
-    padding: Style.marginNormal
-    leftPadding: Style.marginLarge
-    selectByMouse: true
-
-    background: Rectangle {
-        color: Style.bgSecondary
-        border.color: searchField.activeFocus ? Style.borderFocus : Style.borderDefault
-        border.width: searchField.activeFocus ? 2 : 1
-        radius: 4
-    }
+// Kirigami's search field: Breeze frame, search icon, and a clear button.
+// Main runs the search on its own debounce, so the field's accepted signal
+// is not used.
+Kirigami.SearchField {
+    placeholderText: "Search files"
+    font.pointSize: Style.fontSizeLarge
+    autoAccept: false
+    focusSequence: ""
 }

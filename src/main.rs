@@ -3,6 +3,7 @@ pub mod config;
 pub mod context_menu;
 pub mod file_opener;
 pub mod ipc;
+pub mod mime_icon;
 pub mod preview;
 pub mod search;
 pub mod system_tray;

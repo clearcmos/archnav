@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import org.kde.kirigami as Kirigami
 
 import org.archnav.app
 
@@ -48,7 +49,7 @@ Rectangle {
                 text: previewBridge ? previewBridge.preview_text : "Select a file to preview"
                 color: Style.textPreview
                 font.family: Style.monoFont
-                font.pixelSize: Style.fontSizePreview
+                font.pointSize: Style.fontSizePreview
                 wrapMode: TextArea.NoWrap
                 selectByMouse: true
 
@@ -81,11 +82,11 @@ Rectangle {
 
         // Index 2: No preview / empty state
         Item {
-            Label {
+            Kirigami.PlaceholderMessage {
                 anchors.centerIn: parent
+                width: parent.width - Kirigami.Units.gridUnit * 2
+                icon.name: "document-preview"
                 text: "Select a file to preview"
-                color: Style.textDim
-                font.pixelSize: Style.fontSizeNormal
             }
         }
 
@@ -130,14 +131,13 @@ Rectangle {
                     policy: ScrollBar.AsNeeded
                 }
 
-                Text {
+                Label {
                     id: markdownText
                     width: markdownContainer.stableWidth - 14
                     text: previewBridge ? previewBridge.preview_text : ""
                     textFormat: Text.RichText
                     color: Style.textPreview
-                    font.family: Style.defaultFont
-                    font.pixelSize: Style.fontSizeNormal
+                    font.pointSize: Style.fontSizeNormal
                     wrapMode: Text.Wrap
                     onLinkActivated: function(link) {
                         Qt.openUrlExternally(link)
@@ -183,7 +183,7 @@ Rectangle {
                     text: previewBridge ? previewBridge.preview_text : ""
                     color: Style.textPreview
                     font.family: Style.monoFont
-                    font.pixelSize: Style.fontSizePreview
+                    font.pointSize: Style.fontSizePreview
                     wrapMode: TextArea.NoWrap
                     selectByMouse: true
 

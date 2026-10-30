@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import org.kde.kirigami as Kirigami
 
 import org.archnav.app
 
@@ -9,18 +10,12 @@ Dialog {
     id: dialog
     title: "Manage Bookmarks"
     modal: true
-    width: 500
-    height: 400
+    width: Math.round(Kirigami.Units.gridUnit * 28 * Style.zoomFactor)
+    height: Math.round(Kirigami.Units.gridUnit * 22 * Style.zoomFactor)
     anchors.centerIn: parent
+    standardButtons: Dialog.Close
 
     property SearchEngine searchEngine: null
-
-    background: Rectangle {
-        color: Style.bgSecondary
-        border.color: Style.borderDefault
-        border.width: 1
-        radius: 4
-    }
 
     function refreshBookmarks() {
         bookmarkModel.clear()
@@ -49,133 +44,103 @@ Dialog {
 
     ColumnLayout {
         anchors.fill: parent
-        anchors.margins: Style.marginNormal
         spacing: Style.marginNormal
 
         // Bookmark list
-        ListView {
-            id: bookmarkList
+        Frame {
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            model: bookmarkModel
-            currentIndex: -1
+            padding: 0
 
-            delegate: ItemDelegate {
-                id: bmDelegate
-                width: bookmarkList.width
-                height: 36
-
-                contentItem: RowLayout {
-                    spacing: Style.marginNormal
-
-                    Text {
-                        text: model.name
-                        color: Style.accentBlue
-                        font.family: Style.monoFont
-                        font.pixelSize: Style.fontSizeNormal
-                        font.bold: true
-                        Layout.preferredWidth: 100
-                    }
-
-                    Text {
-                        text: model.path
-                        color: Style.textTertiary
-                        font.family: Style.monoFont
-                        font.pixelSize: Style.fontSizeSmall
-                        elide: Text.ElideMiddle
-                        Layout.fillWidth: true
-                    }
-                }
-
-                background: Rectangle {
-                    color: bmDelegate.ListView.isCurrentItem ? Style.bgSelected
-                         : bmDelegate.hovered ? Style.bgHover
-                         : "transparent"
-                }
-
-                onClicked: bookmarkList.currentIndex = index
-            }
-
-            Rectangle {
+            ListView {
+                id: bookmarkList
                 anchors.fill: parent
-                color: "transparent"
-                border.color: Style.borderDefault
-                border.width: 1
-                radius: 3
-                z: -1
+                clip: true
+                model: bookmarkModel
+                currentIndex: -1
+
+                delegate: ItemDelegate {
+                    id: bmDelegate
+                    width: bookmarkList.width
+                    highlighted: ListView.isCurrentItem
+
+                    contentItem: ColumnLayout {
+                        spacing: 0
+
+                        Label {
+                            text: model.name
+                            color: bmDelegate.highlighted
+                                ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
+                            font.pointSize: Style.fontSizeNormal
+                            font.bold: true
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                        }
+
+                        Label {
+                            text: model.path
+                            color: bmDelegate.highlighted
+                                ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
+                            opacity: 0.75
+                            font.pointSize: Style.fontSizeSmall
+                            elide: Text.ElideMiddle
+                            textFormat: Text.PlainText
+                            Layout.fillWidth: true
+                        }
+                    }
+
+                    onClicked: bookmarkList.currentIndex = index
+                }
+
+                Kirigami.PlaceholderMessage {
+                    parent: bookmarkList
+                    anchors.centerIn: parent
+                    width: parent.width - Kirigami.Units.gridUnit * 2
+                    visible: bookmarkList.count === 0
+                    icon.name: "bookmarks"
+                    text: "No bookmarks"
+                    explanation: "Add a folder to search it."
+                }
             }
         }
 
         // Action buttons
         RowLayout {
             Layout.fillWidth: true
-            spacing: Style.marginNormal
+            spacing: Kirigami.Units.mediumSpacing
 
             Button {
-                text: "Add..."
+                text: "Add…"
+                icon.name: "list-add"
                 onClicked: folderDialog.open()
-                palette.buttonText: Style.textSecondary
-                background: Rectangle {
-                    color: parent.hovered ? Style.buttonHover : Style.buttonBg
-                    border.color: Style.buttonBorder
-                    border.width: 1
-                    radius: 3
-                }
             }
 
             Button {
-                text: "Rename"
+                text: "Rename…"
+                icon.name: "edit-rename"
                 enabled: bookmarkList.currentIndex >= 0
                 onClicked: renameDialog.open()
-                palette.buttonText: Style.textSecondary
-                background: Rectangle {
-                    color: parent.hovered ? Style.buttonHover : Style.buttonBg
-                    border.color: Style.buttonBorder
-                    border.width: 1
-                    radius: 3
-                    opacity: parent.enabled ? 1.0 : 0.5
-                }
             }
 
             Button {
-                text: "Delete"
+                text: "Remove"
+                icon.name: "list-remove"
                 enabled: bookmarkList.currentIndex >= 0
                 onClicked: {
                     var item = bookmarkModel.get(bookmarkList.currentIndex)
                     if (item && searchEngine)
                         searchEngine.remove_bookmark(item.name)
                 }
-                palette.buttonText: Style.statusRed
-                background: Rectangle {
-                    color: parent.hovered ? Style.buttonHover : Style.buttonBg
-                    border.color: Style.buttonBorder
-                    border.width: 1
-                    radius: 3
-                    opacity: parent.enabled ? 1.0 : 0.5
-                }
             }
 
             Item { Layout.fillWidth: true }
-
-            Button {
-                text: "Close"
-                onClicked: dialog.close()
-                palette.buttonText: Style.textSecondary
-                background: Rectangle {
-                    color: parent.hovered ? Style.buttonHover : Style.buttonBg
-                    border.color: Style.buttonBorder
-                    border.width: 1
-                    radius: 3
-                }
-            }
         }
 
         // Tip text
         Label {
             text: "All bookmarks are searched together. Changes are saved to ~/.config/archnav/config.json."
-            color: Style.textDim
-            font.pixelSize: Style.fontSizeSmall
+            opacity: 0.75
+            font.pointSize: Style.fontSizeSmall
             wrapMode: Text.Wrap
             Layout.fillWidth: true
         }
@@ -200,60 +165,31 @@ Dialog {
         id: renameDialog
         title: "Rename Bookmark"
         modal: true
-        width: 300
-        height: 150
+        width: Math.round(Kirigami.Units.gridUnit * 18 * Style.zoomFactor)
         anchors.centerIn: parent
+        standardButtons: Dialog.Ok | Dialog.Cancel
 
-        background: Rectangle {
-            color: Style.bgSecondary
-            border.color: Style.borderDefault
-            border.width: 1
-            radius: 4
+        // Fill the field with the selected bookmark each time, not only on
+        // first creation, so a second rename starts from the right name
+        onOpened: {
+            var item = bookmarkModel.get(bookmarkList.currentIndex)
+            renameField.text = item ? item.name : ""
+            renameField.selectAll()
+            renameField.forceActiveFocus()
         }
 
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: Style.marginNormal
-            spacing: Style.marginNormal
+        onAccepted: {
+            var item = bookmarkModel.get(bookmarkList.currentIndex)
+            if (item && searchEngine && renameField.text.length > 0)
+                searchEngine.rename_bookmark(item.name, renameField.text)
+        }
 
-            TextField {
-                id: renameField
-                Layout.fillWidth: true
-                placeholderText: "New name"
-                placeholderTextColor: Style.textDim
-                color: Style.textPrimary
-                font.family: Style.monoFont
-                background: Rectangle {
-                    color: Style.bgPrimary
-                    border.color: Style.borderDefault
-                    radius: 3
-                }
-                Component.onCompleted: {
-                    if (bookmarkList.currentIndex >= 0) {
-                        var item = bookmarkModel.get(bookmarkList.currentIndex)
-                        if (item) text = item.name
-                    }
-                }
-            }
-
-            RowLayout {
-                Layout.fillWidth: true
-                Item { Layout.fillWidth: true }
-                Button {
-                    text: "Rename"
-                    onClicked: {
-                        var item = bookmarkModel.get(bookmarkList.currentIndex)
-                        if (item && searchEngine && renameField.text.length > 0) {
-                            searchEngine.rename_bookmark(item.name, renameField.text)
-                            renameDialog.close()
-                        }
-                    }
-                }
-                Button {
-                    text: "Cancel"
-                    onClicked: renameDialog.close()
-                }
-            }
+        TextField {
+            id: renameField
+            anchors.left: parent.left
+            anchors.right: parent.right
+            placeholderText: "New name"
+            onAccepted: renameDialog.accept()
         }
     }
 }

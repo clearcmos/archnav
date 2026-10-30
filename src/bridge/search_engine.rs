@@ -92,6 +92,17 @@ pub mod qobject {
         #[qinvokable]
         fn result_filename_at(self: &SearchEngine, row: i32) -> QString;
 
+        // Theme icon name for the result's file type ("folder" for directories)
+        #[qinvokable]
+        fn result_icon_at(self: &SearchEngine, row: i32) -> QString;
+
+        // Results column layout as JSON ({"widths": {...}, "hidden": [...]})
+        #[qinvokable]
+        fn column_layout(self: &SearchEngine) -> QString;
+
+        #[qinvokable]
+        fn save_column_layout(self: &SearchEngine, layout: QString);
+
         // File operations
         #[qinvokable]
         fn open_file(self: &SearchEngine, path: QString);
@@ -439,6 +450,26 @@ impl qobject::SearchEngine {
                 QString::from(name)
             })
             .unwrap_or_default()
+    }
+
+    fn result_icon_at(&self, row: i32) -> QString {
+        self.rust()
+            .results
+            .get(row as usize)
+            .map(|r| QString::from(&crate::mime_icon::icon_name_for(&r.path, r.is_dir)))
+            .unwrap_or_default()
+    }
+
+    fn column_layout(&self) -> QString {
+        let columns = crate::config::AppConfig::load().columns;
+        QString::from(&serde_json::to_string(&columns).unwrap_or_default())
+    }
+
+    fn save_column_layout(&self, layout: QString) {
+        match serde_json::from_str::<crate::config::ColumnLayout>(&layout.to_string()) {
+            Ok(columns) => crate::config::AppConfig::save_columns(columns),
+            Err(e) => tracing::warn!("Ignoring malformed column layout from QML: {}", e),
+        }
     }
 
     /// Open a file using KIO::OpenUrlJob for proper Wayland focus handling.
