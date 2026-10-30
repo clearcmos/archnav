@@ -626,105 +626,6 @@ impl TrigramIndex {
     pub fn trigram_count(&self) -> usize {
         self.trigrams.len()
     }
-
-    /// Roots of tag stores known to the index (paths containing a
-    /// .tagstore component). Discovery rides on the trigram index itself, so
-    /// only stores under scanned bookmarks are visible to t: queries.
-    fn tag_store_roots(&self) -> Vec<String> {
-        let trigrams = Self::extract_trigrams(".tagstore");
-        let candidates = self.intersect_trigrams(&trigrams);
-        let mut roots = std::collections::BTreeSet::new();
-        for id in candidates {
-            if let Some(entry) = self.files.get(&id) {
-                if let Some(pos) = entry.path.find("/.tagstore") {
-                    // Require a component boundary so "/.tagstore-old" is skipped
-                    let after = &entry.path[pos + "/.tagstore".len()..];
-                    if after.is_empty() || after.starts_with('/') {
-                        roots.insert(entry.path[..pos].to_string());
-                    }
-                }
-            }
-        }
-        roots.into_iter().collect()
-    }
-
-    /// Search driven by tag filters (t: tokens). Candidates come from the
-    /// tag store indexes rather than the trigram index, so a t:-only
-    /// query costs O(tagged files) instead of scanning all files; any text,
-    /// extension, and path constraints in the query still apply on top.
-    pub fn search_tagged(&self, query: &ParsedQuery) -> Vec<SearchAllResult> {
-        let bookmark_map: HashMap<&str, &str> = self
-            .bookmarks
-            .iter()
-            .map(|b| (b.path.as_str(), b.name.as_str()))
-            .collect();
-        let search_paths: Vec<&str> = self.bookmarks.iter().map(|b| b.path.as_str()).collect();
-
-        let mut results: Vec<SearchAllResult> = Vec::new();
-        for root in self.tag_store_roots() {
-            let entries = match crate::tagstore::entries_for_root(Path::new(&root)) {
-                Ok(entries) => entries,
-                Err(err) => {
-                    debug!("search_tagged: skipping store {}: {}", root, err);
-                    continue;
-                }
-            };
-            for (rel, tags) in entries.iter() {
-                if !query.tags_match(tags) {
-                    continue;
-                }
-                if query.dirs_only() {
-                    continue; // tag store entries are always regular files
-                }
-                let path = format!("{}/{}", root, rel);
-                if !query.matches_path(&path) {
-                    continue;
-                }
-                let bookmark = search_paths
-                    .iter()
-                    .find(|&&bp| path_under_root(&path, bp))
-                    .and_then(|bp| bookmark_map.get(bp).copied())
-                    .unwrap_or("")
-                    .to_string();
-                // Metadata from the file index when present; fall back to a
-                // stat for tagged files living outside the scanned set.
-                let (mtime, size) = if let Some(entry) =
-                    self.path_to_id.get(&path).and_then(|id| self.files.get(id))
-                {
-                    (entry.mtime, entry.size)
-                } else {
-                    match std::fs::metadata(&path) {
-                        Ok(meta) => {
-                            let mtime = meta
-                                .modified()
-                                .ok()
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map(|d| d.as_secs() as i64)
-                                .unwrap_or(0);
-                            (mtime, meta.len())
-                        }
-                        Err(_) => continue, // stale index entry; `archnav tag repair` reconciles
-                    }
-                };
-                results.push(SearchAllResult {
-                    path,
-                    is_dir: false,
-                    mtime,
-                    size,
-                    bookmark,
-                });
-            }
-        }
-
-        sort_all_results(
-            &mut results,
-            query.sort_order,
-            &self.path_to_id,
-            &self.access_data,
-        );
-        results.truncate(self.max_results);
-        results
-    }
 }
 
 /// Sort SearchResult by the given order
@@ -894,7 +795,6 @@ mod tests {
             file_type_mode: FileTypeMode::All,
             sort_order: SortOrder::MtimeDesc,
             path_segments: None,
-            tag_filters: Vec::new(),
         };
 
         let results = index.search(&query, "/tmp/test");
@@ -932,7 +832,6 @@ mod tests {
             file_type_mode: FileTypeMode::All,
             sort_order: SortOrder::NameAsc,
             path_segments: None,
-            tag_filters: Vec::new(),
         };
         let results = index.search(&query, "/tmp");
         assert_eq!(results[0].path, "/tmp/aaa.txt");
@@ -999,70 +898,91 @@ mod tests {
         assert!(lits.iter().any(|l| l == "bar"));
     }
 
-    /// Build a real tagdex store on disk plus a matching trigram index, so
-    /// search_tagged is exercised end to end (store discovery via the
-    /// .tagstore path component, tag filtering, text refinement).
-    fn tagged_fixture() -> (tempfile::TempDir, TrigramIndex) {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().to_str().unwrap().to_string();
-        std::fs::create_dir_all(tmp.path().join(".tagstore")).unwrap();
-        std::fs::write(
-            tmp.path().join(".tagstore/index.json"),
-            r#"{"version": 1, "entries": {
-                "coffee-patio.jpg": {"tags": ["coffee", "outdoor"], "size": 1, "mtime_ns": 2, "fp": "a"},
-                "dog.jpg": {"tags": ["dog"], "size": 1, "mtime_ns": 2, "fp": "b"}
-            }}"#,
-        )
-        .unwrap();
-        std::fs::write(tmp.path().join("coffee-patio.jpg"), "x").unwrap();
-        std::fs::write(tmp.path().join("dog.jpg"), "x").unwrap();
+    /// Three files whose name, mtime, size, and path orders all disagree, so
+    /// each sort order produces a distinct, checkable sequence.
+    fn sort_fixture() -> TrigramIndex {
+        let mut index = TrigramIndex::new();
+        index.bookmarks.push(Bookmark {
+            name: "t".to_string(),
+            path: "/t".to_string(),
+            is_network: false,
+        });
+        index.add("/t/b/beta-report.txt".to_string(), false, 300, 20);
+        index.add("/t/a/alpha-report.txt".to_string(), false, 100, 30);
+        index.add("/t/c/gamma-report.txt".to_string(), false, 200, 10);
+        index
+    }
 
-        let mut idx = TrigramIndex::new();
-        idx.add(format!("{}/.tagstore/index.json", root), false, 10, 1);
-        idx.add(format!("{}/coffee-patio.jpg", root), false, 20, 1);
-        idx.add(format!("{}/dog.jpg", root), false, 30, 1);
-        idx.add(format!("{}/untagged.txt", root), false, 40, 1);
-        (tmp, idx)
+    fn names<P: AsRef<str>>(paths: impl IntoIterator<Item = P>) -> Vec<String> {
+        paths
+            .into_iter()
+            .map(|p| {
+                Path::new(p.as_ref())
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
     }
 
     #[test]
-    fn test_search_tagged_by_tag() {
-        let (_tmp, idx) = tagged_fixture();
-        let q = ParsedQuery::parse("t:coffee", SortOrder::NameAsc);
-        let results = idx.search_tagged(&q);
-        assert_eq!(results.len(), 1);
-        assert!(results[0].path.ends_with("coffee-patio.jpg"));
+    fn every_sort_order_ranks_results_as_named() {
+        let mut index = sort_fixture();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        // gamma opened often and just now, beta once long ago, alpha never
+        let gamma = index.path_to_id["/t/c/gamma-report.txt"];
+        let beta = index.path_to_id["/t/b/beta-report.txt"];
+        index.access_data.insert(
+            gamma,
+            AccessInfo {
+                open_count: 5,
+                last_opened: now,
+            },
+        );
+        index.access_data.insert(
+            beta,
+            AccessInfo {
+                open_count: 1,
+                last_opened: now - 90 * 86400,
+            },
+        );
+
+        let expected = [
+            (SortOrder::MtimeDesc, ["beta", "gamma", "alpha"]),
+            (SortOrder::MtimeAsc, ["alpha", "gamma", "beta"]),
+            (SortOrder::NameAsc, ["alpha", "beta", "gamma"]),
+            (SortOrder::NameDesc, ["gamma", "beta", "alpha"]),
+            (SortOrder::SizeDesc, ["alpha", "beta", "gamma"]),
+            (SortOrder::SizeAsc, ["gamma", "beta", "alpha"]),
+            (SortOrder::PathAsc, ["alpha", "beta", "gamma"]),
+            (SortOrder::Frecency, ["gamma", "beta", "alpha"]),
+        ];
+        for (order, want) in expected {
+            let want: Vec<String> = want.iter().map(|n| format!("{n}-report.txt")).collect();
+            let q = ParsedQuery::parse("report", order);
+            let all = names(index.search_all(&q, &[]).iter().map(|r| r.path.clone()));
+            assert_eq!(all, want, "search_all {:?}", order);
+            // The single-bookmark search (used over IPC) sorts the same way
+            let one = names(index.search(&q, "/t").iter().map(|r| r.path.clone()));
+            assert_eq!(one, want, "search {:?}", order);
+        }
     }
 
     #[test]
-    fn test_search_tagged_any_tag_and_text_refinement() {
-        let (_tmp, idx) = tagged_fixture();
-        // Bare "t:" = every tagged file
-        let q = ParsedQuery::parse("t:", SortOrder::NameAsc);
-        assert_eq!(idx.search_tagged(&q).len(), 2);
-        // Text still narrows within tagged files
-        let q = ParsedQuery::parse("t: dog", SortOrder::NameAsc);
-        assert_eq!(idx.search_tagged(&q).len(), 1);
-        let q = ParsedQuery::parse("dog t:coffee", SortOrder::NameAsc);
-        assert_eq!(idx.search_tagged(&q).len(), 0); // AND of text and tag
-    }
-
-    #[test]
-    fn test_search_tagged_or_and_ampersand() {
-        let (_tmp, idx) = tagged_fixture();
-        // OR: either tag matches
-        let q = ParsedQuery::parse("t: coffee dog", SortOrder::NameAsc);
-        assert_eq!(idx.search_tagged(&q).len(), 2);
-        // AND via &: both tags on the same file
-        let q = ParsedQuery::parse("t: coffee&outdoor", SortOrder::NameAsc);
-        let results = idx.search_tagged(&q);
-        assert_eq!(results.len(), 1);
-        assert!(results[0].path.ends_with("coffee-patio.jpg"));
-        // AND across files that never co-occur
-        let q = ParsedQuery::parse("t: coffee&dog", SortOrder::NameAsc);
-        assert_eq!(idx.search_tagged(&q).len(), 0);
-        // Uppercase AND alias
-        let q = ParsedQuery::parse("t: coffee AND outdoor", SortOrder::NameAsc);
-        assert_eq!(idx.search_tagged(&q).len(), 1);
+    fn regex_glob_and_fuzzy_queries_find_their_files() {
+        let index = sort_fixture();
+        let found = |raw: &str| {
+            let q = ParsedQuery::parse(raw, SortOrder::NameAsc);
+            names(index.search_all(&q, &[]).iter().map(|r| r.path.clone()))
+        };
+        assert_eq!(found("/alph[a]-rep"), ["alpha-report.txt"]);
+        assert_eq!(found("gam*rep"), ["gamma-report.txt"]);
+        // One typo away from "beta"
+        assert_eq!(found("~betta"), ["beta-report.txt"]);
+        assert!(found("~zzzzzz").is_empty());
     }
 }

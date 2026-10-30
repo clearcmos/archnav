@@ -132,4 +132,29 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
     }
+
+    #[test]
+    fn markdown_images_take_the_pane_width_and_resolve_relative_paths() {
+        let html = markdown_to_html(
+            "![a](pics/a.png) ![b](https://example.org/b.png) ![c](/abs/c.png)",
+            "/notes",
+            320,
+        );
+        assert!(html.starts_with("<html><body"));
+        assert!(html.contains(r#"<img width="320" src="/notes/pics/a.png""#));
+        assert!(html.contains(r#"src="https://example.org/b.png""#));
+        assert!(html.contains(r#"src="/abs/c.png""#));
+    }
+
+    #[test]
+    fn preview_markdown_renders_a_file_relative_to_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("README.md");
+        std::fs::write(&file, "# Title\n\n- [x] done\n\n![shot](shot.png)\n").unwrap();
+
+        let html = preview_markdown(file.to_str().unwrap(), 200);
+        assert!(html.contains("<h1>Title</h1>"));
+        assert!(html.contains("checkbox"), "task lists are enabled");
+        assert!(html.contains(&format!(r#"src="{}/shot.png""#, dir.path().display())));
+    }
 }

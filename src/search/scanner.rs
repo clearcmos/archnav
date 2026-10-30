@@ -276,7 +276,9 @@ pub fn reconcile_directory(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_network_mount_in, path_under_any, path_under_root, scan_directory};
+    use super::{
+        is_network_mount_in, path_under_any, path_under_root, reconcile_directory, scan_directory,
+    };
     use crate::search::database::DbOp;
     use crate::search::trigram::TrigramIndex;
     use std::path::PathBuf;
@@ -325,6 +327,27 @@ mod tests {
             0,
             "a rescan with nothing changed must not touch the database"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Startup reconcile adds what the index lacks and nothing else; changes
+    /// to files it already knows are left to rescans and the watcher.
+    #[test]
+    fn reconcile_indexes_only_paths_the_index_lacks() {
+        let root = temp_tree();
+        let index = Arc::new(RwLock::new(TrigramIndex::new()));
+        let (tx, rx) = channel();
+        scan_directory(&root, &index, &tx);
+        queued(&rx);
+
+        std::fs::write(root.join("sub").join("d.txt"), "d").unwrap();
+        std::fs::write(root.join("b.txt"), "a different size").unwrap();
+        assert_eq!(reconcile_directory(&root, &index, &tx), 1);
+
+        let ops = queued(&rx);
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(&ops[0], DbOp::SaveFile(e) if e.path.ends_with("/sub/d.txt")));
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -33,9 +33,10 @@ pub struct AppConfig {
     pub columns: ColumnLayout,
 }
 
-/// Widths and visibility of the results columns, keyed by column ("path",
-/// "size", "date", "tags"). Widths are unzoomed pixels. Name has no entry:
-/// it is always shown and fills the width the other columns leave.
+/// Widths and visibility of the results columns, keyed by column ("name",
+/// "path", "size", "date"). Widths are unzoomed pixels. Name is always shown
+/// and has no width entry while it fills the width the others leave; the
+/// first separator drag stores one.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ColumnLayout {
     #[serde(default)]
@@ -232,6 +233,37 @@ mod tests {
     }
 
     #[test]
+    fn max_results_is_clamped_to_the_engine_cap() {
+        let with = |max_results| AppConfig {
+            max_results,
+            ..AppConfig::default()
+        };
+        assert_eq!(with(0).effective_max_results(), 1);
+        assert_eq!(with(250).effective_max_results(), 250);
+        assert_eq!(
+            with(i32::MAX).effective_max_results(),
+            crate::search::trigram::MAX_RESULTS
+        );
+    }
+
+    #[test]
+    fn bookmarks_convert_to_engine_bookmarks() {
+        let config = AppConfig {
+            bookmarks: vec![BookmarkConfig {
+                name: "nas".to_string(),
+                path: "/mnt/nas".to_string(),
+                is_network: true,
+            }],
+            ..AppConfig::default()
+        };
+        let bookmarks = config.to_bookmarks();
+        assert_eq!(bookmarks.len(), 1);
+        assert_eq!(bookmarks[0].name, "nas");
+        assert_eq!(bookmarks[0].path, "/mnt/nas");
+        assert!(bookmarks[0].is_network);
+    }
+
+    #[test]
     fn config_without_columns_parses_with_an_empty_layout() {
         let config: AppConfig = serde_json::from_str(r#"{"bookmarks": []}"#).unwrap();
         assert_eq!(config.columns, ColumnLayout::default());
@@ -240,10 +272,10 @@ mod tests {
     #[test]
     fn column_layout_round_trips_through_json() {
         let layout: ColumnLayout =
-            serde_json::from_str(r#"{"widths": {"path": 320, "size": 90}, "hidden": ["tags"]}"#)
+            serde_json::from_str(r#"{"widths": {"path": 320, "size": 90}, "hidden": ["size"]}"#)
                 .unwrap();
         assert_eq!(layout.widths.get("path"), Some(&320));
-        assert_eq!(layout.hidden, vec!["tags".to_string()]);
+        assert_eq!(layout.hidden, vec!["size".to_string()]);
         let json = serde_json::to_string(&layout).unwrap();
         assert_eq!(serde_json::from_str::<ColumnLayout>(&json).unwrap(), layout);
     }

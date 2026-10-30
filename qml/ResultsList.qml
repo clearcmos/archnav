@@ -9,7 +9,7 @@ import org.kde.kirigami as Kirigami
 // drags a separator, Name fills whatever width the others leave; the first
 // drag fixes Name at its current width, and from then on a dragged separator
 // follows the pointer and only the columns to its right move. Path, Size,
-// Modified, and Tags can be hidden from the header's right-click menu.
+// and Modified can be hidden from the header's right-click menu.
 ColumnLayout {
     id: root
     spacing: 0
@@ -38,9 +38,9 @@ ColumnLayout {
 
     // Column layout. Widths are unzoomed pixels so they survive a zoom change.
     // `widths` has no "name" entry while Name fills automatically.
-    readonly property var columnKeys: ["path", "size", "date", "tags"]
-    readonly property var defaultWidths: ({ path: 300, size: 80, date: 140, tags: 120 })
-    readonly property var minWidths: ({ name: Kirigami.Units.gridUnit * 8, path: 100, size: 60, date: 100, tags: 60 })
+    readonly property var columnKeys: ["path", "size", "date"]
+    readonly property var defaultWidths: ({ path: 300, size: 80, date: 140 })
+    readonly property var minWidths: ({ name: Kirigami.Units.gridUnit * 8, path: 100, size: 60, date: 100 })
     property var widths: defaultWidths
     property var hidden: []
 
@@ -169,7 +169,7 @@ ColumnLayout {
     readonly property real scrollBarWidth: listView.ScrollBar.vertical && listView.ScrollBar.vertical.visible
         ? listView.ScrollBar.vertical.width : 0
     readonly property int availableWidth: listView.width - 2 * rowPadding - scrollBarWidth
-    readonly property int othersWidth: colWidth("path") + colWidth("size") + colWidth("date") + colWidth("tags")
+    readonly property int othersWidth: colWidth("path") + colWidth("size") + colWidth("date")
     readonly property int nameMinWidth: Math.round(minWidths.name * Style.zoomFactor)
     // Auto: everything the other columns leave. Fixed: the user's width, but
     // given back down to the minimum when the list narrows (preview pane),
@@ -253,15 +253,6 @@ ColumnLayout {
                 sortState: root.dateSortState
                 onClicked: root.headerClicked("date")
             }
-            // Tags live in the tag stores, outside the engine's sorters
-            HeaderCell {
-                title: "Tags"
-                visible: root.shown("tags")
-                Layout.preferredWidth: root.colWidth("tags")
-                Layout.minimumWidth: root.colWidth("tags")
-                Layout.maximumWidth: root.colWidth("tags")
-                sortable: false
-            }
             Item { Layout.fillWidth: true }
         }
 
@@ -308,12 +299,10 @@ ColumnLayout {
             pathItem.checked = root.shown("path")
             sizeItem.checked = root.shown("size")
             dateItem.checked = root.shown("date")
-            tagsItem.checked = root.shown("tags")
         }
         MenuItem { id: pathItem; text: "Path"; checkable: true; onTriggered: root.toggleColumn("path") }
         MenuItem { id: sizeItem; text: "Size"; checkable: true; onTriggered: root.toggleColumn("size") }
         MenuItem { id: dateItem; text: "Modified"; checkable: true; onTriggered: root.toggleColumn("date") }
-        MenuItem { id: tagsItem; text: "Tags"; checkable: true; onTriggered: root.toggleColumn("tags") }
         MenuSeparator {}
         MenuItem { text: "Reset Columns"; onTriggered: root.resetColumns() }
     }
@@ -471,21 +460,6 @@ ColumnLayout {
                     font.pointSize: Style.fontSizeNormal
                     horizontalAlignment: Text.AlignRight
                     elide: Text.ElideRight
-                }
-
-                // Tags from the file's tag store, empty when untagged
-                Label {
-                    visible: root.shown("tags")
-                    Layout.preferredWidth: root.colWidth("tags")
-                    Layout.minimumWidth: root.colWidth("tags")
-                    Layout.maximumWidth: root.colWidth("tags")
-                    leftPadding: Style.marginSmall
-                    rightPadding: Style.marginSmall
-                    text: model.tags || ""
-                    color: row.textColor
-                    font.pointSize: Style.fontSizeNormal
-                    elide: Text.ElideRight
-                    textFormat: Text.PlainText
                 }
 
                 Item { Layout.fillWidth: true }

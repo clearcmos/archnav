@@ -67,30 +67,11 @@ ApplicationWindow {
         id: preview
     }
 
-    TagBridge {
-        id: tagBridge
-    }
-
     BookmarkDialog {
         id: bookmarkDialog
         searchEngine: engine
     }
 
-    TagDialog {
-        id: tagDialog
-        tagBridge: tagBridge
-    }
-
-    // Keep the visible row in sync after a tag edit lands
-    Connections {
-        target: tagBridge
-        function onTagsSaved() {
-            if (resultsList.currentIndex >= 0) {
-                resultsModel.setProperty(
-                    resultsList.currentIndex, "tags", tagBridge.tags.toString())
-            }
-        }
-    }
 
     // Results data
     ListModel {
@@ -109,14 +90,13 @@ ApplicationWindow {
                 filename: engine.result_filename_at(i),
                 iconName: engine.result_icon_at(i),
                 mtime: engine.result_mtime_at(i),
-                fileSize: engine.result_size_at(i),
-                tags: tagBridge.tags_for(p, d).toString()
+                fileSize: engine.result_size_at(i)
             })
         }
         resultsList.currentIndex = resultsModel.count > 0 ? 0 : -1
         // currentIndex may not change value across searches (0 -> 0), so the
-        // onCurrentIndexChanged hook alone would leave stale tags displayed.
-        updateTags()
+        // onCurrentIndexChanged hook alone would leave a stale preview.
+        updatePreview()
     }
 
     function openSelected() {
@@ -143,28 +123,6 @@ ApplicationWindow {
         if (item) {
             preview.request_preview(item.path, item.isDir, previewPanel.contentWidth)
         }
-    }
-
-    function updateTags() {
-        if (resultsList.currentIndex < 0) {
-            tagBridge.clear()
-            return
-        }
-        var item = resultsModel.get(resultsList.currentIndex)
-        if (item) {
-            tagBridge.load_tags(item.path, item.isDir)
-        } else {
-            tagBridge.clear()
-        }
-    }
-
-    function editTags() {
-        if (resultsList.currentIndex < 0) return
-        var item = resultsModel.get(resultsList.currentIndex)
-        if (!item || item.isDir) return
-        tagDialog.filePath = item.path
-        tagDialog.fileName = item.filename
-        tagDialog.open()
     }
 
     function setSortOrder(sortIndex) {
@@ -342,10 +300,7 @@ ApplicationWindow {
                     ? Number(engine.total_indexed).toLocaleString(Qt.locale(), "f", 0) + " files indexed"
                     : ""
 
-                onCurrentIndexChanged: {
-                    updatePreview()
-                    updateTags()
-                }
+                onCurrentIndexChanged: updatePreview()
                 onItemDoubleClicked: openSelected()
                 onContextMenuRequested: function(path, globalX, globalY) {
                     engine.show_context_menu(path, globalX, globalY)
@@ -389,16 +344,6 @@ ApplicationWindow {
                 visible: frecencyMode
             }
 
-            // Tags of the selected file (from its tag store, if any)
-            Label {
-                text: "Tags: " + tagBridge.tags
-                font.pointSize: Style.fontSizeSmall
-                textFormat: Text.PlainText
-                visible: tagBridge.tags.toString() !== ""
-                elide: Text.ElideRight
-                Layout.maximumWidth: Math.round(parent.width * 0.5)
-            }
-
             Item { Layout.fillWidth: true }
 
             Label {
@@ -433,10 +378,6 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+B"
         onActivated: bookmarkDialog.open()
-    }
-    Shortcut {
-        sequence: "Ctrl+T"
-        onActivated: editTags()
     }
     Shortcut {
         sequence: "Ctrl+O"
@@ -551,15 +492,6 @@ ApplicationWindow {
 
                 Label { text: "Ctrl+B"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Manage bookmarks"; font.pointSize: Style.fontSizeNormal }
-
-                Label { text: "Ctrl+T"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                Label { text: "Edit tags of selected file"; font.pointSize: Style.fontSizeNormal }
-
-                Label { text: "t: a b"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                Label { text: "Filter by tag a OR b (t: alone = any tagged file)"; font.pointSize: Style.fontSizeNormal }
-
-                Label { text: "t: a&b"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
-                Label { text: "Filter by tag a AND b (also: t: a AND b)"; font.pointSize: Style.fontSizeNormal }
 
                 // Separator
                 Item { Layout.columnSpan: 2; Layout.preferredHeight: Style.marginSmall }
