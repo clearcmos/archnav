@@ -7,15 +7,15 @@ index of every path under your bookmarks and searches it as you type.
 
 ## Features
 
-- **Trigram-indexed search** - On a 1.4M-file index (i7-13700K, 24 threads), most queries take under a millisecond, very common words like `config` (146,630 matches) about 13 ms, and a query with no three-character run (`ab`, or `*.rs` alone) about 20 ms, since it checks every path on all cores. When a keystroke only extends the query and the previous results were complete, archnav filters them instead of searching again. `archnav --benchmark` measures your own index
-- **Words in any order** - `left all` finds "All That's Left of You"; `!trailer` leaves out paths containing a word; size and date filters such as `size:>1G` or `dm:thisweek`
+- **Trigram-indexed search** - On a 1.4M-file index (i7-13700K, 24 threads), specific queries take under a millisecond, very common words like `config` (146,630 matches) about 13 ms, and a query with no three-character run (`ab`, or `*.rs` alone) about 20 ms, since it checks every path on all cores. When a keystroke only extends the query and the previous results were complete, archnav filters them instead of searching again. `archnav --benchmark` measures your own index
+- **Query syntax** - words match in any order (`left all` finds "All That's Left of You"), `!trailer` leaves out paths containing a word, `size:>1G` and `dm:thisweek` filter by size and date, plus regex, glob, fuzzy, and path-aware search (see Search Syntax)
 - **Previews** - Text, rendered Markdown, images, PDF and audio/video metadata, archive contents
 - **Unified search** - Search all bookmarks simultaneously; the status bar shows how many paths matched when more than the result cap (500 by default) did
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
 - **Results table** - File-type icons from the icon theme, click a header to sort, drag its edge to resize, right-click it to show or hide Path, Size, and Modified; widths and hidden columns are remembered. Click a path to open its folder
 - **Live updates** - inotify applies changes under local bookmarks as they happen (folders it cannot read are skipped); network mounts are rescanned every 5 minutes
-- **Keyboard-centric** - Arrow keys navigate, Enter opens, Esc closes
+- **Keyboard-centric** - Arrow keys navigate, Enter opens, Esc hides to the tray
 - **System tray** - Persists in tray when closed, toggle with click or global hotkey
 - **Context menu** - Right-click for Open With, Copy, Cut, Rename, Delete, Properties
 - **Zoom support** - Ctrl+=/- to scale UI

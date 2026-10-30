@@ -148,7 +148,7 @@ The search engine uses **trigram indexing** for substring matching:
 
 ## Key Features
 
-- **Trigram search**: measured with `--benchmark` on a 1.4M-file index (i7-13700K, 24 threads): most queries under 1 ms, very common words (`config`, 146,630 matches) about 13 ms, and queries without a 3-character run (`ab`, `*.rs` alone) about 20 ms on all cores. Don't quote a single latency figure; it depends on the query
+- **Trigram search**: measured with `--benchmark` on a 1.4M-file index (i7-13700K, 24 threads): specific queries under 1 ms, very common words (`config`, 146,630 matches) about 13 ms, and queries without a 3-character run (`ab`, `*.rs` alone) about 20 ms on all cores. Don't quote a single latency figure; it depends on the query
 - **Words, exclusions, filters**: plain words must all appear, in any order; `"..."` keeps a phrase; `!word` excludes; `size:` and `dm:` filter on size (files only) and modification time. Regex queries (`/...`) keep `!`, quotes, and `size:` literal. The result cache (`SearchCache`) reuses earlier results only when `ParsedQuery::narrows` proves the new query can only remove matches: every old word inside a new word, every old `!word` containing a new one, and identical filters
 - **Unified search**: Searches all bookmarks simultaneously by default
 - **Regex search**: `/pattern` for regex matching
