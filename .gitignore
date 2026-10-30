@@ -3,3 +3,6 @@ target/
 
 # local scratch notes, never committed
 TEST.md
+
+# per-machine QML language server settings (absolute build path)
+.qmlls.ini

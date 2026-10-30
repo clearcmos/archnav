@@ -7,7 +7,7 @@ Fast, keyboard-centric file navigator for KDE Wayland with instant trigram-index
 ## Features
 
 - **Instant search** - Trigram-indexed engine provides sub-10ms search across 600k+ files
-- **Smart previews** - Text files, images, audio/video metadata, archive contents
+- **Smart previews** - Text, rendered Markdown, images, PDF and audio/video metadata, archive contents
 - **Unified search** - Search all bookmarks simultaneously
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
@@ -43,8 +43,12 @@ cargo run
 # Build release
 cargo build --release
 
-# Toggle existing instance
+# Toggle existing instance (or start one)
 cargo run -- --toggle
+
+# Start in the tray and load the index without showing the window
+# (what a login autostart entry should run)
+cargo run -- --hidden
 ```
 
 ## Installation
@@ -67,10 +71,10 @@ This installs `archnav` to `/usr/bin/`, registers the desktop file, and ships th
 | `Enter` | Open file or folder |
 | `Ctrl+O` | Open containing folder |
 | `Ctrl+P` | Toggle preview pane |
-| `Ctrl+R` | Refresh index |
+| `Ctrl+R` | Rescan all bookmarks |
 | `Ctrl+B` | Manage bookmarks |
 | `Ctrl+Shift+F` | Toggle frecency sort |
-| `Ctrl+=` / `Ctrl+-` | Zoom in / out |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+Scroll` | Zoom in / out |
 | `Ctrl+0` | Reset zoom |
 | `F1` | Toggle keyboard shortcuts help |
 | `Right-click` | Context menu |
@@ -107,12 +111,16 @@ Set up a global shortcut for `archnav --toggle`:
 
 | File Type | Preview Shows |
 |-----------|--------------|
-| Text files | File contents (up to 50KB) |
+| Text files | File contents (first 50 KB) |
+| Markdown | Rendered, with images sized to the pane |
 | Directories | Folder listing |
 | Images | Scaled image display |
-| Audio (MP3, FLAC) | Album art, ID3 tags, duration, bitrate |
-| Video (MKV, MP4) | Resolution, duration, audio tracks, subtitles |
-| Archives (ZIP, TAR) | Contents listing with sizes |
+| PDF | Document metadata from `pdfinfo` (pages, title, producer) |
+| Audio (MP3, FLAC, ...) | Album art, ID3 tags, duration, bitrate |
+| Video (MKV, MP4, ...) | Resolution, duration, audio tracks, subtitles |
+| Archives (ZIP, TAR, gz, bz2, xz) | Contents listing with sizes |
+| Archives (7z, rar, zst) | Contents listing via `7z`, `unrar`, or `zstd` when installed |
+| Binaries, fonts, databases | File name and size |
 
 ## Configuration
 
@@ -154,7 +162,7 @@ Single unified Rust application using cxx-qt for Qt/QML bindings:
 - **Search engine**: Trigram-based posting lists with SQLite persistence
 - **File watcher**: inotify for real-time local filesystem updates
 - **Preview system**: Text, media (via ffprobe), archives, directories
-- **Qt/QML GUI**: Dark theme, responsive layout with split view
+- **Qt/QML GUI**: Kirigami on the Breeze desktop style, so it follows the KDE color scheme and fonts; results table with a split preview pane
 
 ## Data Locations
 
@@ -162,7 +170,8 @@ Single unified Rust application using cxx-qt for Qt/QML bindings:
 |------|----------|
 | Config | `~/.config/archnav/config.json` |
 | Index | `~/.local/share/archnav/index.db` |
-| Toggle Socket | `$XDG_RUNTIME_DIR/archnav.sock` |
+| Toggle socket | `$XDG_RUNTIME_DIR/archnav.sock` |
+| IPC socket for scripts | `$XDG_RUNTIME_DIR/archnav-daemon.sock` (line commands: `SEARCH`, `SEARCH_ALL`, `ADD_BOOKMARK`, `RESCAN`, `STATS`, `PING`) |
 
 ## License
 

@@ -25,13 +25,14 @@ src/
 │   ├── integrity.rs     # Periodic integrity checker + network scanner
 │   └── query.rs         # Query parsing (*.ext, /regex, glob, ~fuzzy, path/aware, folder:)
 ├── preview/             # Preview generators
-│   ├── text.rs          # Text file preview (with size limit)
+│   ├── mod.rs           # Preview dispatch by extension (images, PDF info, binaries)
+│   ├── text.rs          # Text file preview (with size limit), Markdown to HTML
 │   ├── media.rs         # Audio/video metadata via ffprobe
 │   ├── archive.rs       # ZIP/TAR contents listing
 │   └── directory.rs     # Directory listing
 ├── config.rs            # JSON config load/save (~/.config/archnav/config.json)
-├── ipc.rs               # Unix socket IPC server for toggle command
-├── toggle.rs            # Toggle client (--toggle flag)
+├── ipc.rs               # Line-protocol IPC server for scripts ($XDG_RUNTIME_DIR/archnav-daemon.sock)
+├── toggle.rs            # Single-instance toggle socket: server in the app, client for --toggle
 ├── context_menu.rs      # Rust FFI wrapper for C++ context menu
 ├── context_menu.cpp     # KDE-style right-click context menu (Qt/C++)
 ├── context_menu.h       # Context menu header
@@ -39,11 +40,11 @@ src/
 ├── system_tray.cpp      # QSystemTrayIcon with menu (Qt/C++)
 ├── system_tray.h        # System tray header
 ├── file_opener.rs       # Rust FFI wrapper for KIO file opener
+├── file_opener.cpp      # KIO::OpenUrlJob file opener (proper Wayland focus)
+├── file_opener.h        # File opener header
 ├── mime_icon.rs         # Rust FFI wrapper: theme icon name for a result's file type
 ├── mime_icon.cpp        # QMimeDatabase name-only lookup + QIcon theme check
 ├── mime_icon.h          # MIME icon header
-├── file_opener.cpp      # KIO::OpenUrlJob file opener (proper Wayland focus)
-├── file_opener.h        # File opener header
 ├── qt_debug_handler.cpp # Qt message handler redirecting to Rust tracing
 └── qt_app.cpp           # QApplication wrapper for QtWidgets (needed for QMenu)
 
@@ -54,7 +55,7 @@ qml/
 ├── Main.qml             # Main window, keyboard shortcuts, layout
 ├── SearchBar.qml        # Kirigami.SearchField
 ├── ResultsList.qml      # Column header + results list (columns, sort arrows, path links, placeholder)
-├── PreviewPanel.qml     # Preview pane (text, images, audio art, metadata)
+├── PreviewPanel.qml     # Preview pane (text, Markdown, images, audio art, metadata)
 ├── BookmarkDialog.qml   # Bookmark management dialog (Ctrl+B)
 └── Style.qml            # Singleton: theme colors, fonts, spacing scaled by zoom
 ```
@@ -79,6 +80,10 @@ cargo build --release
 
 # Run with debug logging
 RUST_LOG=archnav=debug cargo run
+
+# Headless search against the real index, and a search benchmark
+cargo run --release -- --test-search "query one" "query two"
+cargo run --release -- --benchmark --iterations 100
 
 # Test / lint / format (all enforced by CI on push and PR)
 cargo test
@@ -112,7 +117,7 @@ A root-level `PKGBUILD` (`pkgname=archnav-git`) pulls from the github remote, bu
 - **SQLite (rusqlite)**: Persistent index storage with posting list cache
 - **notify 8**: Cross-platform filesystem watcher (inotify on Linux)
 - **walkdir**: Fast recursive directory traversal
-- **QML/Qt Quick**: Declarative UI with dark theme
+- **QML/Qt Quick + Kirigami**: Declarative UI on the Breeze desktop style (see UI: Breeze)
 - **Qt DBus**: For freedesktop FileManager1 integration (file properties dialog)
 - **Qt Widgets**: For native context menus (QMenu) and system tray (QSystemTrayIcon)
 
@@ -123,7 +128,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 1. **Trigrams**: Each filename is split into 3-character overlapping sequences
 2. **Posting lists**: Map trigram -> set of file IDs containing it
 3. **Search**: Intersect posting lists for all query trigrams, then filter by substring match
-4. **Persistence**: SQLite stores files + posting lists; fast load (~2-3s for 760k files)
+4. **Persistence**: SQLite stores files + posting lists; fast load in about 2-5 s for 1.4M files
 
 ### Performance Optimizations
 
@@ -151,7 +156,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 - **Folders-only filter**: `folder:movies` or `folder: movies` to show directories whose own name matches (folders nested under a matching directory are excluded)
 - **Extension filtering**: `*.py query` to filter by file extension
 - **Sort options**: Recent, Oldest, Name A-Z/Z-A, Largest, Smallest, Path
-- **Smart previews**: Text, images, audio/video metadata, archive contents
+- **Smart previews**: Text, rendered Markdown, images, PDF and audio/video metadata, archive contents
 - **Real-time updates**: inotify watches for file changes (local paths only)
 - **Network mount support**: Periodic rescanning for network paths (marked `is_network`)
 - **Keyboard-centric**: Arrow keys navigate, Enter opens, Esc hides to tray
@@ -174,6 +179,7 @@ The search engine uses **trigram indexing** for instant substring matching:
 | `Ctrl+Shift+F` | Toggle frecency sort |
 | `Ctrl+=` / `Ctrl++` | Zoom in |
 | `Ctrl+-` | Zoom out |
+| `Ctrl+Scroll` | Zoom in / out |
 | `Ctrl+0` | Reset zoom |
 | `Esc` | Hide to tray |
 | `F1` | Toggle keyboard shortcuts help |
@@ -185,7 +191,13 @@ The search engine uses **trigram indexing** for instant substring matching:
 |------|----------|
 | Config | `~/.config/archnav/config.json` |
 | Index | `~/.local/share/archnav/index.db` |
-| Toggle Socket | `$XDG_RUNTIME_DIR/archnav.sock` |
+| Toggle socket | `$XDG_RUNTIME_DIR/archnav.sock` |
+| IPC socket | `$XDG_RUNTIME_DIR/archnav-daemon.sock` |
+
+The IPC socket (`ipc.rs`) keeps the protocol of the old standalone daemon for
+scripts: one command per line, `SEARCH <json>`, `SEARCH_ALL <json>`,
+`ADD_BOOKMARK <json>`, `RESCAN <path>`, `STATS`, `PING`, each answered with
+one JSON line.
 
 ## Config Structure
 
@@ -309,7 +321,7 @@ The context menu (`context_menu.cpp`) provides Dolphin-like file operations:
 2. Register `Style.qml` as a singleton
 3. Compile bridge Rust files into Qt MOC-compatible C++
 4. Run MOC on `system_tray.cpp` (contains Q_OBJECT for signal handling)
-5. Compile C++ files (`context_menu.cpp`, `qt_app.cpp`, `qt_debug_handler.cpp`, `system_tray.cpp`)
+5. Compile C++ files (`context_menu.cpp`, `file_opener.cpp`, `mime_icon.cpp`, `qt_app.cpp`, `qt_debug_handler.cpp`, `system_tray.cpp`)
 6. Link Qt modules: Qml, Quick, QuickControls2, Widgets, DBus
 7. Link KDE Frameworks 6 libraries from standard system paths
 

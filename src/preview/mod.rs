@@ -40,7 +40,7 @@ pub fn generate_preview(path: &str, is_dir: bool, content_width: u32) -> Preview
             image_path: path.to_string(),
         },
 
-        // PDF — render pages with pdftoppm
+        // PDF - document metadata from pdfinfo
         "pdf" => {
             let text = pdf_info(path);
             PreviewResult {

@@ -2,243 +2,204 @@
 
 ## Overview
 
-archnav is a unified Rust application with Qt/QML GUI using cxx-qt for bindings. It provides instant file search across large filesystems via trigram indexing.
+archnav is a single Rust binary with a Qt/QML interface bound through cxx-qt.
+It keeps a trigram index of every path under the configured bookmarks in
+memory, persists it in SQLite, and keeps it current with inotify for local
+paths and periodic rescans for network mounts.
 
-The architecture prioritizes:
-- **Instant response** - Trigram index enables sub-10ms search
-- **Fast startup** - Posting list cache in SQLite, async watcher setup
-- **Real-time updates** - inotify for local paths, periodic scan for network mounts
-- **Single binary** - No separate daemon; everything in one process
+The design aims for:
+- **Instant response**: substring search is an intersection of trigram posting
+  lists, then a filter over the candidates
+- **Fast startup**: the posting lists are cached in SQLite and loaded directly
+- **Few disk writes**: rescans and file events write only entries that changed
+- **One process**: no separate daemon; the window, index, and IPC servers share
+  it, and the window can start hidden in the tray
 
-## Component Diagram
+## Components
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           archnav (Rust + Qt/QML)                                 │
-│                                                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │                        Qt/QML UI Layer (qml/)                                │ │
-│  │  Main.qml ─── SearchBar.qml ─── ResultsList.qml ─── PreviewPanel.qml        │ │
-│  │      │                                                                       │ │
-│  │      └── BookmarkDialog.qml ─── Style.qml (singleton)                        │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                                    │                                              │
-│                         QObject properties/signals                               │
-│                                    │                                              │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │                      Bridge Layer (src/bridge/)                              │ │
-│  │  SearchEngine ─────────────────────────── PreviewBridge                     │ │
-│  │  - engine_ready, result_count            - preview_text, preview_type       │ │
-│  │  - search(), initialize()                - request_preview()                │ │
-│  │  - open_file(), rescan_all()             - clear_preview()                  │ │
-│  │  - show_context_menu()                   - Signals: previewReady            │ │
-│  │  - Signals: resultsReady,                                                   │ │
-│  │             bookmarksChanged                                                 │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                                    │                                              │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │                     Core Engine (src/search/)                                │ │
-│  │                                                                               │ │
-│  │  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐                  │ │
-│  │  │ TrigramIndex   │  │    Database    │  │   FileWatcher  │                  │ │
-│  │  │                │  │   (SQLite)     │  │   (inotify)    │                  │ │
-│  │  │ trigrams: Map  │  │                │  │                │                  │ │
-│  │  │ files: Map     │  │ ~/.local/share │  │ Real-time      │                  │ │
-│  │  │ path_to_id     │  │ /archnav/       │  │ file changes   │                  │ │
-│  │  │                │  │ index.db       │  │ (async setup)  │                  │ │
-│  │  └────────────────┘  └────────────────┘  └────────────────┘                  │ │
-│  │         │                    │                   │                            │ │
-│  │         └────────────────────┴───────────────────┘                            │ │
-│  │                              │                                                 │ │
-│  │  ┌────────────────┐  ┌────────────────┐                                      │ │
-│  │  │ IntegrityCheck │  │ NetworkScanner │  Background threads                  │ │
-│  │  │ (every 60s)    │  │ (every 5min)   │                                      │ │
-│  │  └────────────────┘  └────────────────┘                                      │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                                                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │                     Preview System (src/preview/)                            │ │
-│  │  text.rs ── media.rs (ffprobe) ── archive.rs (zip/tar) ── directory.rs      │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-│                                                                                   │
-│  ┌─────────────────────────────────────────────────────────────────────────────┐ │
-│  │                     IPC (src/ipc.rs, src/toggle.rs)                          │ │
-│  │  Unix socket server at $XDG_RUNTIME_DIR/archnav.sock                          │ │
-│  │  Accepts "toggle" command to show/hide window                                │ │
-│  └─────────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│ QML UI (qml/)                                                            │
+│   Main.qml: window, shortcuts, status bar, F1 help popup                 │
+│   SearchBar.qml (Kirigami.SearchField)   ResultsList.qml (header + rows) │
+│   PreviewPanel.qml   BookmarkDialog.qml   Style.qml (theme singleton)    │
+└──────────────────────────────┬───────────────────────────────────────────┘
+                               │ QObject properties, invokables, signals
+┌──────────────────────────────▼───────────────────────────────────────────┐
+│ Bridge (src/bridge/)                                                     │
+│   SearchEngine: initialize, search, result accessors (path, size, mtime, │
+│     icon name), bookmarks, column layout, open file/folder, context menu │
+│   PreviewBridge: request_preview, clear_preview, preview text/image      │
+└──────────────────────────────┬───────────────────────────────────────────┘
+┌──────────────────────────────▼───────────────────────────────────────────┐
+│ Core engine (src/search/)                                                │
+│   CoreEngine ── TrigramIndex (in memory, behind an RwLock)               │
+│       │      └─ Database writer thread (SQLite, batched transactions)    │
+│       ├── scanner: initial scan, startup reconcile, index_path           │
+│       ├── watcher: inotify for local bookmarks                           │
+│       └── integrity: 60 s stale-entry sweep, 5 min network rescan        │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Previews (src/preview/)   text/Markdown, media (ffprobe), archives, dirs │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Native glue (C++)   context menu (QMenu), tray icon, KIO file opener,    │
+│                     MIME icon lookup, QApplication wrapper               │
+├──────────────────────────────────────────────────────────────────────────┤
+│ Sockets   toggle.rs: archnav.sock        ipc.rs: archnav-daemon.sock     │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Trigram Index
+## Trigram index
 
-The search engine uses trigram posting lists for instant substring matching:
+Every indexed path contributes the trigrams of its file name and of each path
+component. A query's trigrams select candidates by intersecting posting lists,
+and the candidates are then checked against the full query:
 
 ```
 Query: "test"
 Trigrams: ["tes", "est"]
 
 Posting lists (in memory):
-  "tes" -> {file_id_1, file_id_5, file_id_99, ...}
-  "est" -> {file_id_1, file_id_12, file_id_99, ...}
+  "tes" -> {1, 5, 99, ...}
+  "est" -> {1, 12, 99, ...}
 
-Intersection: {file_id_1, file_id_99}  <- candidates
-Final filter: verify actual substring match in filename
+Intersection: {1, 99}  <- candidates
+Final filter: the query must match the path (or, for folder:, the folder name)
 ```
 
-This approach (used by plocate, Google Code Search) enables O(1) candidate lookup regardless of index size.
+The same approach is used by plocate and Google Code Search: candidate lookup
+cost depends on the query, not on the number of indexed files.
 
-### Persistence
+`SearchCache` in `engine.rs` keeps the previous query's results. When the new
+query only extends the old one (typing `con`, then `conf`), it filters those
+results instead of searching again, unless they were truncated at the result
+cap.
 
-SQLite stores:
-- `files` table: id, path, is_dir, mtime, size
-- `file_trigrams` table: file_id, trigrams (blob)
-- `posting_lists` table: trigram (blob), file_ids (blob)
-- `meta` table: posting_lists_count (for cache validation)
+## Persistence
+
+SQLite (`~/.local/share/archnav/index.db`, WAL mode) holds:
+- `files`: id, path (unique), is_dir, mtime, size
+- `posting_lists`: trigram, packed file ids; the startup cache
+- `meta`: `posting_lists_count` and `posting_lists_next_id` (cache
+  validation), `max_file_id` (ids are never reused), `trigram_schema_version`
+- `bookmarks`, and `file_access` (open counts for frecency sorting)
+
+Trigrams are not stored per file: they are a pure function of the path.
 
 On startup:
-1. Check if `posting_lists_count` matches actual file count
-2. If match: load posting lists directly (fast path, ~2-3s for 760k files)
-3. If mismatch: rebuild posting lists from per-file trigrams (slow path, ~7s)
+1. If the cached posting-list count is within 1% of the file count, load the
+   files and posting lists directly (the fast path, about 2-5 s for 1.4M
+   files), then compute trigrams for files added since the cache was built.
+2. Otherwise compute every file's trigrams from its path, rebuild the posting
+   lists, and save them as the new cache.
 
-## Threading Model
+An older database is migrated once when opened: the per-file trigram table and
+two unused indexes are dropped and the file is compacted with VACUUM. The WAL
+is truncated to 64 MiB after checkpoints.
+
+All writes go through one database thread over a channel, batched up to 1000
+operations per transaction. Indexing goes through `scanner::index_path`, which
+queues nothing for an entry whose type, mtime, and size are unchanged, an
+in-place `UPDATE` for changed metadata, and an insert only for a new path, so
+a rescan of an unchanged tree writes nothing.
+
+## Keeping the index current
+
+- **Startup**: an empty index gets a full scan of every bookmark; otherwise a
+  reconcile walks the bookmarks and adds only paths the index lacks.
+- **Local bookmarks**: inotify (the `notify` crate) applies creates, changes,
+  removals, and renames as they happen.
+- **Network bookmarks** (`is_network` in the config, or an nfs/cifs/sshfs
+  mount found in `/proc/mounts`): rescanned every 5 minutes, since inotify
+  cannot see remote changes.
+- **Integrity sweep**: every 60 s, 5000 index entries are checked and those
+  whose files are gone are removed; entries under a bookmark that is currently
+  unreachable (an unmounted share) are left alone.
+- **Excludes**: built-in directory names (`.git`, `node_modules`, `target`,
+  `.cache`, and others in `trigram.rs`) plus the config's `exclude_paths`, all
+  through the single `should_exclude` check in `scanner.rs`.
+
+## Threading
 
 ```
-Main Thread (Qt event loop)
-    │
-    ├── QML UI rendering
-    │
+Main thread (Qt event loop)
+    ├── QML UI
     └── SearchEngine QObject
-            │
-            ├── CoreEngine (created in background thread)
-            │       │
-            │       ├── Database load (blocking, ~2-3s)
-            │       │
-            │       └── Background thread (spawned after load)
-            │               ├── inotify Watcher setup (slow, 5-16s)
-            │               ├── Integrity Checker (every 60s)
-            │               └── Network Scanner (every 5min)
-            │
-            └── Search (read lock on index, very fast)
+            ├── initialize(): background thread opens the database, loads the
+            │   index, then reports "ready"; the user can search from here
+            │       └── background thread: inotify setup (can take seconds),
+            │           startup scan or reconcile, integrity sweep, network rescan
+            └── search(): background thread per query, read lock on the index;
+                results are queued back to the Qt thread, stale ones dropped
 
-Database Writer Thread
-    └── Serializes all SQLite writes via channel
+Database writer thread
+    └── serializes every SQLite write
 ```
 
-Key optimization: Engine reports "ready" immediately after index load. Watcher setup continues in background, so users can search while watchers are still being configured.
+## Query syntax
 
-## Query Parsing
+`query.rs` turns the search text into a `ParsedQuery`:
+- `config`: substring over the full path
+- `*.rs config`: extension filter, anywhere in the query
+- `/^README`: regular expression
+- `foo*bar`: glob over the file name or path
+- `~confg`: fuzzy match on the file name, with an edit-distance budget that
+  grows with query length
+- `src/config`: path-aware; `config` must sit under a `src` component
+- `folder:movies`: directories whose own name matches
 
-The `query.rs` module parses search strings:
+Sort orders: most recent, oldest, name A-Z and Z-A, largest, smallest, path,
+and frecency (Ctrl+Shift+F).
 
-```
-Input: "home:*.rs config"
+## Previews
 
-Parsed:
-  - bookmark_path: "/home/user" (from bookmark named "home")
-  - extension: "rs"
-  - terms: ["config"]
-  - sort_order: Recent (default)
-```
+`preview/mod.rs` picks a preview by extension:
+- **Images**: shown by QML from the file path
+- **PDF**: `pdfinfo` metadata
+- **Audio and video**: `ffprobe -print_format json` metadata, plus album art
+- **Archives**: zip and tar (plain, gz, bz2, xz) listed in-process; 7z, rar, and
+  zst through `7z`, `unrar`, or `zstd`
+- **Markdown**: rendered to HTML with pulldown-cmark, images sized to the pane
+  and resolved relative to the file
+- **Binaries, fonts, databases**: name and size
+- **Everything else**: the first 50 KB as text, with binary detection
+- **Directories**: a listing
 
-Supports:
-- `bookmark:query` - filter to specific bookmark
-- `*.ext query` - filter by extension
-- Sort options: Recent, Oldest, Name A-Z/Z-A, Largest, Smallest, Path
+## Interface
 
-## Smart Preview System
+The QML follows KDE's Breeze design: colors, fonts, and spacing come from
+Kirigami and the system palette, list rows use the desktop style's own
+delegates, and file-type icons come from the icon theme through a name-only
+MIME lookup (no filesystem access, which matters on network mounts). The
+results table resizes its columns the way Dolphin does. `CLAUDE.md` records
+the conventions and the reasons behind them.
 
-Preview type detection (in Rust):
+## Sockets
 
-```rust
-match extension {
-    "mp3" | "flac" | "ogg" | ... => PreviewType::Audio,
-    "mp4" | "mkv" | "avi" | ... => PreviewType::Video,
-    "zip" | "tar" | "gz" | ...  => PreviewType::Archive,
-    "png" | "jpg" | "gif" | ... => PreviewType::Image,
-    _ if is_binary(path)        => PreviewType::Binary,
-    _                           => PreviewType::Text,
-}
-```
+- **Toggle** (`$XDG_RUNTIME_DIR/archnav.sock`, `toggle.rs`): the running
+  window listens; `archnav --toggle` writes `toggle` to show or hide it. A
+  plain second launch toggles the running window and exits; `--hidden` exits
+  quietly if one is running.
+- **Scripts** (`$XDG_RUNTIME_DIR/archnav-daemon.sock`, `ipc.rs`): one command
+  per line, each answered with one JSON line: `SEARCH <json>`,
+  `SEARCH_ALL <json>`, `ADD_BOOKMARK <json>`, `RESCAN <path>`, `STATS`,
+  `PING`. It keeps the protocol of the standalone daemon archnav replaced.
 
-Preview handlers:
-- **text**: Read first 50KB of file
-- **image**: Return path for QML Image element
-- **audio/video**: Run `ffprobe -print_format json` to extract metadata
-- **archive**: Use `zip` or `tar` crate to list contents
-- **directory**: List directory contents with `std::fs::read_dir`
+## Context menu
 
-## IPC Protocol
+`context_menu.cpp` builds a QMenu with Dolphin-style actions: Open, Open With
+(from `mimeapps.list`), Cut, Copy, Copy Location, Duplicate Here, Rename, Move
+to Trash, Delete (confirmed), Move to New Folder, Open Terminal Here, Open as
+Administrator, Compress, and Properties, the last through the freedesktop
+`FileManager1.ShowItemProperties` D-Bus call, which also works on network
+mounts. QML asks for it through `SearchEngine::show_context_menu`.
 
-Single socket for window toggle:
-
-```
-Path: $XDG_RUNTIME_DIR/archnav.sock
-Protocol: Raw bytes
-Command: "toggle" -> Show/hide window
-```
-
-The `--toggle` flag sends this command to existing instance, or starts a new one if none running.
-
-## Startup Sequence
-
-1. Check `--toggle` flag; if set and instance exists, send toggle and exit
-2. Initialize Qt application and QML engine
-3. Load QML from embedded QRC resources
-4. SearchEngine::initialize() spawns background thread:
-   a. Open SQLite database
-   b. Load index (fast path if cache valid)
-   c. Report "engine ready" via signal
-   d. Spawn async thread for watcher setup + integrity checker
-5. User can search immediately after step 4c
-
-## Exclude Patterns
-
-Hardcoded in `scanner.rs`:
-
-```rust
-const EXCLUDE_DIRS: &[&str] = &[
-    ".git", "node_modules", "__pycache__", ".cache", ".npm", ".cargo",
-    "target", "build", "dist", ".next", ".nuxt",
-];
-
-const EXCLUDE_PATTERNS: &[&str] = &[".Trash", "Trash"];
-```
-
-## Context Menu
-
-The context menu (`src/context_menu.cpp`) provides Dolphin-style file operations:
-
-```
-┌─────────────────────────────────────────┐
-│ QML (ResultsList.qml)                   │
-│   onContextMenuRequested(path, x, y)    │
-│               │                         │
-└───────────────│─────────────────────────┘
-                │
-┌───────────────▼─────────────────────────┐
-│ Rust (search_engine.rs)                 │
-│   show_context_menu(path, x, y)         │
-│               │                         │
-└───────────────│─────────────────────────┘
-                │ FFI call
-┌───────────────▼─────────────────────────┐
-│ C++ (context_menu.cpp)                  │
-│   ContextMenuHandler::showContextMenu() │
-│   - QMenu with QActions                 │
-│   - Reads mimeapps.list for "Open With" │
-│   - DBus for Properties dialog          │
-└─────────────────────────────────────────┘
-```
-
-Uses Qt Widgets (QMenu) for native context menu appearance.
-Uses Qt DBus for freedesktop FileManager1.ShowItemProperties (works on network mounts).
-
-## Build System
+## Build
 
 `build.rs` uses cxx-qt-build to:
-1. Register QML module `org.archnav.app`
-2. Register all QML files, with Style.qml as singleton
-3. Compile Rust bridge files to MOC-compatible C++
-4. Compile C++ files: `context_menu.cpp`, `qt_app.cpp`, `qt_debug_handler.cpp`
-5. Link Qt modules: Qml, Quick, QuickControls2, Widgets, DBus
-6. Link KDE Frameworks 6 libraries from standard system paths
+1. Register the QML module `org.archnav.app`, with `Style.qml` as a singleton
+2. Generate the C++ side of the Rust bridge objects
+3. Run MOC on `system_tray.cpp`
+4. Compile `context_menu.cpp`, `file_opener.cpp`, `mime_icon.cpp`,
+   `qt_app.cpp`, `qt_debug_handler.cpp`, and `system_tray.cpp`
+5. Link the Qml, Quick, QuickControls2, Widgets, and DBus Qt modules and the
+   KDE Frameworks (KIO, KService, KCoreAddons)
