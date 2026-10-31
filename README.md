@@ -13,10 +13,10 @@ index of every path under your bookmarks and searches it as you type.
 - **Unified search** - Search all bookmarks simultaneously; every match is listed, and the list creates rows only as they scroll into view
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
-- **Results table** - File-type icons from the icon theme, the matched text in bold, and the full name in a tooltip when it is shortened. Click a header (or press Ctrl+1 to 4) to sort, drag its edge to resize or double-click the edge to fit the column, right-click it to show or hide Path, Size, and Modified; widths, hidden columns, and the window size are remembered. Click a path to open its folder
+- **Results table** - File-type icons from the icon theme, the matched text in bold, and the full name in a tooltip when it is shortened. Click a header (or press Ctrl+1 to 4) to sort, drag its edge to resize or double-click the edge to fit the column, right-click it to show or hide Path, Size, and Modified; widths, hidden columns, and the window size are remembered. Name takes up any change in the window's width, and in a narrow window Path gives way first. Double-click a path to open its folder
 - **Selection** - Ctrl+click, Shift+click, or Shift with the arrow keys selects several results; drag them to Dolphin, a browser, or any other app, or copy them with Ctrl+C (Ctrl+Alt+C copies their paths)
 - **Live updates** - inotify applies changes under local bookmarks as they happen (folders it cannot read are skipped); network mounts are rescanned every 5 minutes
-- **Keyboard-centric** - Focus stays in the search field: arrows, Page Up/Down, and Home/End move through the results, Enter opens, the Menu key opens the context menu, Esc hides to the tray
+- **Keyboard-centric** - From the search field, arrows, Page Up/Down, and Home/End move through the results, Enter opens, the Menu key opens the context menu, Esc hides to the tray. Clicking a result moves focus to the list (Ctrl+A selects all); typing, Ctrl+L, or Ctrl+F returns to the search
 - **System tray** - Persists in tray when closed, toggle with click or global hotkey
 - **Context menu** - Right-click (or the Menu key) for Open With, Copy, Cut, Rename, Delete, Properties, on one result or the selection
 - **Zoom support** - Ctrl+=/- to scale UI
@@ -75,6 +75,9 @@ This installs `archnav` to `/usr/bin/`, registers the desktop file, and ships th
 | `Home` / `End` | First / last result (with no results, or with Shift, they act on the search text) |
 | `Shift+Up/Down`, `Shift+Page Up/Down` | Extend the selection |
 | `Ctrl+Click` / `Shift+Click` | Add or remove a result / select a range |
+| `Ctrl+A` | Select all results (after clicking one; in the search field it selects the text) |
+| `Ctrl+L` / `Ctrl+F` | Back to the search field; typing after clicking a result also goes there |
+| Double-click a path | Open the containing folder |
 | `Ctrl+C` | Copy the selected files (when no search text is selected) |
 | `Ctrl+Alt+C` | Copy their locations |
 | Drag | Copy or move the selected files to Dolphin or another app |
@@ -156,9 +159,10 @@ Config stored at `~/.config/archnav/config.json`:
 
 - `max_results` (optional) caps how many results the window lists; absent or
   0 lists every match
-- `columns` is written by the window when a column is resized or hidden. Name
-  fills the width the others leave until a separator is dragged, then keeps
-  its own width; Reset Columns in the header's right-click menu restores that
+- `columns` is written by the window when a column is resized or hidden.
+  Name has no width of its own: it takes what the other columns leave, less
+  any `free` space left at the right by narrowing a column. Reset Columns in
+  the header's right-click menu restores the defaults
 - `window` (absent until the window is first resized) holds the window size,
   restored at the next start
 - `exclude_paths` lists locations to exclude from indexing, recursively;

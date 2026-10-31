@@ -164,7 +164,7 @@ The search engine uses **trigram indexing** for substring matching:
 - **Previews**: Text, rendered Markdown, images, PDF and audio/video metadata, archive contents
 - **Real-time updates**: inotify watches for file changes (local paths only)
 - **Network mount support**: Periodic rescanning for network paths (marked `is_network`)
-- **Keyboard-centric**: Focus stays in the search field, even while rows are clicked, so every results key goes through `ResultsList.handleKey(event, searchBar)`: arrows, Page Up/Down, and Home/End move, Shift extends the selection (Shift+Home/End and Ctrl+A stay with the search text), Ctrl+C copies the selected files unless search text is selected, Ctrl+Alt+C their paths. Enter opens the current result. Menu/Shift+F10 open the context menu (a window `Shortcut`, so the search field does not also open its edit menu); Ctrl+1 to 4 sort by column; Esc hides to tray
+- **Keyboard-centric**: Results keys go through `ResultsList.handleKey(event, textField)`, from the search field or, after a row click moves focus to the list, from `handleListKey` (textField null): arrows, Page Up/Down, and Home/End move, Shift extends the selection (in the search field Shift+Home/End and Ctrl+A stay with its text; in the list they extend and select all), Ctrl+C copies the selected files unless search text is selected, Ctrl+Alt+C their paths. Enter opens the current result. In the list, typing and Backspace go back to the search field (`typedToSearch`), as do Ctrl+L and Ctrl+F. Menu/Shift+F10 open the context menu (a window `Shortcut`, so the search field does not also open its edit menu); Ctrl+1 to 4 sort by column; Esc hides to tray
 - **Selection**: kept in Rust (`RowSelection`) behind `selection_count`/`selection_revision`; with none, the current row stands for it. Rows highlight from `ResultsList.isSelected`, which reads the revision so bindings re-evaluate. Ctrl+click toggles, Shift+click/Shift+keys select from `anchorRow`. A new result set clears it
 - **Drag out**: a `DragHandler` per row (taking over from the list's flicking) asks Main to call `start_drag`, a `QDrag` in `context_menu.cpp` that runs until the drop; it starts from `Qt.callLater` and the handler is reset afterwards, since the drag swallows the release
 - **Match highlighting**: role `nameMarkup` is the file name as StyledText with matches in bold (`highlight.rs`, built per query in the search thread); `Text.ElideMiddle` still works on it
@@ -183,6 +183,9 @@ The search engine uses **trigram indexing** for substring matching:
 | `Home` / `End` | First / last result (with no results, or with Shift, they act on the search text) |
 | `Shift+Up/Down`, `Shift+Page Up/Down` | Extend the selection |
 | `Ctrl+Click` / `Shift+Click` | Add or remove a result / select a range |
+| `Ctrl+A` | Select all results (after clicking one; in the search field it selects the text) |
+| `Ctrl+L` / `Ctrl+F` | Back to the search field; typing after clicking a result also goes there |
+| Double-click a path | Open the containing folder |
 | `Ctrl+C` | Copy the selected files (when no search text is selected) |
 | `Ctrl+Alt+C` | Copy their locations |
 | Drag | Copy or move the selected files to Dolphin or another app |
@@ -231,11 +234,11 @@ absent, 0 for every match).
 
 `columns` is written by the window (debounced, and on hide) when a column is
 resized or hidden from the header's right-click menu. Widths are unzoomed
-pixels. Name has no entry while it fills the width the others leave (the
-default, and after Reset Columns); the first separator drag stores its
-width, the way Dolphin stops sizing columns automatically once one is
-resized by hand. `AppConfig::save_columns` refuses to write over a config that
-does not parse, like `load`.
+pixels. Name has no width of its own: it takes what the other columns
+leave, less `free`, the empty space right of the last column that narrowing
+a column leaves. So Name follows the window, maximize, and the preview pane
+while the other columns keep their widths. `AppConfig::save_columns` refuses
+to write over a config that does not parse, like `load`.
 
 `max_results` (optional) caps how many results the window lists; absent or 0
 (the default) lists every match. IPC requests carry their own `limit` (500
@@ -293,12 +296,15 @@ and archnav's zoom (Ctrl+=/-) only multiplies them.
   below 32 px, as in Dolphin.
 - Column resizing follows Dolphin: a drag moves only the separator under the
   pointer, and the columns after it shift. The drag handles live in a layer
-  above the header cells, centered on each separator. With Name filling on
-  the left, resizing a column by changing its own width leaves the dragged
-  separator still and moves the one on its left instead, which is why the
-  first drag fixes Name's width. There is no horizontal scrolling, so
-  widening uses free space first, then narrows the columns after it from
-  the rightmost inward, each down to its minimum. Double-clicking a
+  above the header cells, centered on each separator. During a drag Name
+  keeps its width unless it is the column dragged, so what the others give
+  or take comes out of `free` (`resizeTo`). There is no horizontal
+  scrolling, so widening uses free space first, then narrows the columns
+  after it from the rightmost inward, each down to its minimum. A list too
+  narrow for Name at its minimum shrinks the shown widths of Path, then
+  Modified, then Size (`shownWidths`, stored widths untouched), and row and
+  header cells clip what still does not fit instead of drawing under the
+  scroll bar. Double-clicking a
   separator fits the column on its left to its title and the rows on screen
   (`fitColumn`, using each delegate's `fitWidth`), as QHeaderView does; rows
   off screen are not measured, since a result set can hold a million paths.

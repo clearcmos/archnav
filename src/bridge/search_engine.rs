@@ -117,6 +117,9 @@ pub mod qobject {
         fn select_range(self: Pin<&mut SearchEngine>, from: i32, to: i32, keep: bool);
 
         #[qinvokable]
+        fn select_all(self: Pin<&mut SearchEngine>);
+
+        #[qinvokable]
         fn is_selected(self: &SearchEngine, row: i32) -> bool;
 
         // Paths of the selected rows, in list order
@@ -441,6 +444,10 @@ impl qobject::SearchEngine {
 
     fn select_range(self: Pin<&mut Self>, from: i32, to: i32, keep: bool) {
         self.change_selection(|selection, rows| selection.select_range(from, to, keep, rows));
+    }
+
+    fn select_all(self: Pin<&mut Self>) {
+        self.change_selection(|selection, rows| selection.select_all(rows));
     }
 
     fn is_selected(&self, row: i32) -> bool {

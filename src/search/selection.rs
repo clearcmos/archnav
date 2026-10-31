@@ -49,6 +49,10 @@ impl RowSelection {
             .insert_range(clamp(from.min(to))..=clamp(from.max(to)));
     }
 
+    pub fn select_all(&mut self, row_count: u32) {
+        self.rows.insert_range(0..row_count);
+    }
+
     /// Selected rows in ascending order.
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.rows.iter().map(|row| row as usize)
@@ -91,7 +95,7 @@ mod tests {
     #[test]
     fn a_range_over_a_million_rows_is_cheap() {
         let mut s = RowSelection::default();
-        s.select_range(0, i32::MAX, false, 1_456_457);
+        s.select_all(1_456_457);
         assert_eq!(s.len(), 1_456_457);
         assert!(s.contains(1_456_456) && !s.contains(1_456_457));
         s.clear();

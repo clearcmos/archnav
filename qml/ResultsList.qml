@@ -5,11 +5,12 @@ import org.kde.kirigami as Kirigami
 
 // Results table: a column header and the list beneath it, kept in one item so
 // the header always spans exactly the list's width (the preview pane can take
-// part of the window). Columns resize the way Dolphin's do: until the user
-// drags a separator, Name fills whatever width the others leave; the first
-// drag fixes Name at its current width, and from then on a dragged separator
-// follows the pointer and only the columns to its right move. Path, Size,
-// and Modified can be hidden from the header's right-click menu.
+// part of the window). Columns resize the way Dolphin's do: a dragged
+// separator follows the pointer and only the columns to its right move.
+// Name takes whatever width the others and the free space at the right
+// leave, so it grows and shrinks with the window and the preview pane while
+// the other columns keep their widths. Path, Size, and Modified can be
+// hidden from the header's right-click menu.
 ColumnLayout {
     id: root
     spacing: 0
@@ -31,7 +32,7 @@ ColumnLayout {
 
     // Keeps the selection: the engine, or anything with its methods
     // (selection_count, is_selected, select_range, toggle_selected,
-    // clear_selection, selected_paths)
+    // select_all, clear_selection, selected_paths)
     property var selector: null
     // Changes with every selection edit, so row highlights follow
     property int selectionRevision: 0
@@ -39,6 +40,9 @@ ColumnLayout {
     property int anchorRow: 0
 
     signal itemDoubleClicked()
+    // A key typed while the list has focus, for the search field: `text`
+    // to add, or `erase` for Backspace
+    signal typedToSearch(string text, bool erase)
     signal contextMenuRequested(var paths, int globalX, int globalY)
     signal openFolderRequested(string path)
     signal headerClicked(string key)
@@ -50,9 +54,10 @@ ColumnLayout {
     signal layoutEdited()
 
     // Column layout. Widths are unzoomed pixels so they survive a zoom change.
-    // `widths` has no "name" entry while Name fills automatically.
+    // `free` is the empty space right of the last column, left there by
+    // narrowing a column; Name has no stored width.
     readonly property var columnKeys: ["path", "size", "date"]
-    readonly property var defaultWidths: ({ path: 300, size: 80, date: 140 })
+    readonly property var defaultWidths: ({ path: 300, size: 80, date: 140, free: 0 })
     readonly property var minWidths: ({ name: Kirigami.Units.gridUnit * 8, path: 100, size: 60, date: 100 })
     property var widths: defaultWidths
     property var hidden: []
@@ -61,8 +66,37 @@ ColumnLayout {
         return hidden.indexOf(key) < 0
     }
 
+    readonly property int freeWidth: Math.round((widths.free || 0) * Style.zoomFactor)
+
+    // Shown widths of Path, Size, and Modified: their own, unless the list is
+    // too narrow for them and Name at its minimum, when Path gives way first,
+    // then Modified, then Size, each down to its minimum. Whatever still does
+    // not fit is clipped at the right edge.
+    readonly property var shownWidths: {
+        var w = {}
+        var total = 0
+        for (var i = 0; i < columnKeys.length; i++) {
+            var key = columnKeys[i]
+            w[key] = shown(key) ? Math.round(widths[key] * Style.zoomFactor) : 0
+            total += w[key]
+        }
+        var over = nameMinWidth + total - availableWidth
+        var order = ["path", "date", "size"]
+        for (var j = 0; j < order.length && over > 0; j++) {
+            var k = order[j]
+            if (!shown(k))
+                continue
+            var take = Math.min(over, w[k] - minPx(k))
+            if (take > 0) {
+                w[k] -= take
+                over -= take
+            }
+        }
+        return w
+    }
+
     function colWidth(key) {
-        return shown(key) ? Math.round(widths[key] * Style.zoomFactor) : 0
+        return shownWidths[key]
     }
 
     // Shown width of any column, Name included
@@ -84,15 +118,6 @@ ColumnLayout {
         return x
     }
 
-    // Stop Name filling automatically: from now on it keeps its width
-    function freezeName() {
-        if (widths.name === undefined) {
-            var next = Object.assign({}, widths)
-            next.name = Math.round(nameColumnWidth / Style.zoomFactor)
-            widths = next
-        }
-    }
-
     function minPx(key) {
         return Math.round(minWidths[key] * Style.zoomFactor)
     }
@@ -102,7 +127,6 @@ ColumnLayout {
     property int dragRoom: 0
 
     function beginResize() {
-        freezeName()
         var start = {}
         for (var i = 0; i < visibleKeys.length; i++)
             start[visibleKeys[i]] = widthOf(visibleKeys[i])
@@ -129,9 +153,22 @@ ColumnLayout {
             overflow -= take
         }
         px[key] -= overflow
+        // Name keeps its width unless it is the column dragged, so what the
+        // others give or take comes out of the free space
+        var namePx = key === "name" ? px.name : dragStart.name
+        var used = namePx
         var next = Object.assign({}, widths)
-        for (var k in px)
+        for (var k in px) {
+            if (k === "name")
+                continue
             next[k] = Math.max(minWidths[k], Math.round(px[k] / Style.zoomFactor))
+            used += px[k]
+        }
+        for (var c = 0; c < columnKeys.length; c++) {
+            if (px[columnKeys[c]] === undefined)
+                used += colWidth(columnKeys[c])
+        }
+        next.free = Math.max(0, Math.round((availableWidth - used) / Style.zoomFactor))
         widths = next
         layoutEdited()
     }
@@ -152,7 +189,16 @@ ColumnLayout {
                 px = Math.max(px, row.fitWidth(key))
         }
         var next = Object.assign({}, widths)
-        next[key] = Math.max(minWidths[key], Math.ceil(px / Style.zoomFactor))
+        if (key === "name") {
+            // Name's width is what the others and the free space leave
+            next.free = Math.max(0, Math.round((availableWidth - px - othersWidth) / Style.zoomFactor))
+        } else {
+            var fitted = Math.max(minWidths[key], Math.ceil(px / Style.zoomFactor))
+            // A wider column takes the free space first, then from Name
+            var growth = Math.round((fitted - widths[key]) * Style.zoomFactor)
+            next.free = Math.max(0, Math.round((freeWidth - Math.max(0, growth)) / Style.zoomFactor))
+            next[key] = fitted
+        }
         widths = next
         layoutEdited()
     }
@@ -185,12 +231,13 @@ ColumnLayout {
         }
         var next = Object.assign({}, defaultWidths)
         var savedWidths = saved.widths || {}
-        var keys = ["name"].concat(columnKeys)
-        for (var i = 0; i < keys.length; i++) {
-            var key = keys[i]
+        for (var i = 0; i < columnKeys.length; i++) {
+            var key = columnKeys[i]
             if (typeof savedWidths[key] === "number")
                 next[key] = Math.max(minWidths[key], savedWidths[key])
         }
+        if (typeof savedWidths.free === "number")
+            next.free = Math.max(0, savedWidths.free)
         widths = next
         hidden = (saved.hidden || []).filter(function(k) { return columnKeys.indexOf(k) >= 0 })
     }
@@ -205,12 +252,9 @@ ColumnLayout {
     readonly property int availableWidth: listView.width - 2 * rowPadding - scrollBarWidth
     readonly property int othersWidth: colWidth("path") + colWidth("size") + colWidth("date")
     readonly property int nameMinWidth: Math.round(minWidths.name * Style.zoomFactor)
-    // Auto: everything the other columns leave. Fixed: the user's width, but
-    // given back down to the minimum when the list narrows (preview pane),
-    // so the columns to the right stay visible as long as possible.
-    readonly property int nameColumnWidth: widths.name === undefined
-        ? Math.max(nameMinWidth, availableWidth - othersWidth)
-        : Math.max(nameMinWidth, Math.min(Math.round(widths.name * Style.zoomFactor), availableWidth - othersWidth))
+    // Everything the other columns and the free space leave, down to the
+    // minimum (then the free space goes first)
+    readonly property int nameColumnWidth: Math.max(nameMinWidth, availableWidth - othersWidth - freeWidth)
 
     // Whether row `i` is selected; with no selection, the current row is
     function isSelected(i) {
@@ -259,15 +303,16 @@ ColumnLayout {
     // Rows a page moves: what fits in the view, less one kept for context
     readonly property int pageRows: Math.max(1, Math.floor(listView.height / Style.rowHeight) - 1)
 
-    // Keys for the results, from the search field `textField`, which keeps
-    // focus while rows are clicked. Arrows and Page Up/Down move, Shift
-    // extending the selection; Home/End jump to the first and last result
-    // (with Shift, or with no results, they act on the search text). Ctrl+C
-    // copies the selected files unless search text is selected, and
-    // Ctrl+Alt+C copies their locations. Returns whether the key was used.
+    // Keys for the results, from the search field `textField`, or from the
+    // list (`textField` null), which takes focus when a row is clicked.
+    // Arrows, Page Up/Down, and Home/End move, Shift extending the
+    // selection; in the search field Shift+Home/End select its text, and with
+    // no results Home/End move its cursor. Ctrl+C copies the selected files
+    // unless search text is selected, and Ctrl+Alt+C copies their locations.
+    // Returns whether the key was used.
     function handleKey(event, textField) {
         var mods = event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
-        if (event.matches(StandardKey.Copy) && textField.selectedText === "") {
+        if (event.matches(StandardKey.Copy) && !(textField && textField.selectedText !== "")) {
             var files = selectedPaths()
             if (files.length > 0)
                 copyRequested(files)
@@ -298,12 +343,45 @@ ColumnLayout {
             return true
         case Qt.Key_Home:
         case Qt.Key_End:
-            if (listView.count === 0 || shift)
+            if (listView.count === 0 || (shift && textField))
                 return false
-            moveTo(event.key === Qt.Key_Home ? 0 : listView.count - 1, false)
+            moveTo(event.key === Qt.Key_Home ? 0 : listView.count - 1, shift)
             return true
         }
         return false
+    }
+
+    // Keys while the list has focus: the results keys, Enter to open, Ctrl+A
+    // to select every result, and typing or Backspace, which go back to the
+    // search field
+    function handleListKey(event) {
+        var mods = event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            itemDoubleClicked()
+            return true
+        }
+        if (event.key === Qt.Key_A && mods === Qt.ControlModifier) {
+            if (selector && listView.count > 0)
+                selector.select_all()
+            return true
+        }
+        if (handleKey(event, null))
+            return true
+        if (event.key === Qt.Key_Backspace && mods === Qt.NoModifier) {
+            typedToSearch("", true)
+            return true
+        }
+        if (event.text.length > 0 && event.text.charCodeAt(0) >= 32
+                && (mods & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) === 0) {
+            typedToSearch(event.text, false)
+            return true
+        }
+        return false
+    }
+
+    // A click on a row takes focus to the list, so Ctrl+A selects results
+    function focusList() {
+        listView.forceActiveFocus()
     }
 
     // The selection's context menu, at (x, y) in `item`
@@ -365,6 +443,8 @@ ColumnLayout {
             anchors.leftMargin: root.rowPadding
             anchors.rightMargin: root.rowPadding + root.scrollBarWidth
             spacing: 0
+            // Columns that do not fit stop at the edge
+            clip: true
 
             HeaderCell {
                 id: nameHeader
@@ -478,6 +558,10 @@ ColumnLayout {
         boundsBehavior: Flickable.StopAtBounds
         highlightMoveDuration: 0
 
+        Keys.onPressed: function(event) {
+            event.accepted = root.handleListKey(event)
+        }
+
         // A content view: the View color set, as Dolphin's file view uses
         Kirigami.Theme.colorSet: Kirigami.Theme.View
         Kirigami.Theme.inherit: false
@@ -527,9 +611,21 @@ ColumnLayout {
                 return p.endsWith("/" + fn) ? p.substring(0, p.length - fn.length - 1) : p
             }
 
+            // Whether `point` (in the row) is on the path text, where a double
+            // click opens the folder rather than the file
+            function onPath(point) {
+                if (!root.shown("path"))
+                    return false
+                var p = pathLabel.mapFromItem(row, point.x, point.y)
+                return p.x >= 0 && p.x <= Math.min(pathLabel.paintedWidth, pathLabel.width)
+            }
+
+            // A double click opens the file, or on the path text, its folder
             onDoubleClicked: {
-                listView.currentIndex = index
-                root.itemDoubleClicked()
+                if (onPath(Qt.point(pressX, pressY)))
+                    root.openFolderRequested(filePath)
+                else
+                    root.itemDoubleClicked()
             }
 
             // A click selects the row, Ctrl+click adds or removes it, and
@@ -537,22 +633,32 @@ ColumnLayout {
             TapHandler {
                 acceptedButtons: Qt.LeftButton
                 acceptedModifiers: Qt.NoModifier
-                onTapped: root.moveTo(index, false)
+                onTapped: {
+                    root.focusList()
+                    root.moveTo(index, false)
+                }
             }
             TapHandler {
                 acceptedButtons: Qt.LeftButton
                 acceptedModifiers: Qt.ControlModifier
-                onTapped: root.toggleRow(index)
+                onTapped: {
+                    root.focusList()
+                    root.toggleRow(index)
+                }
             }
             TapHandler {
                 acceptedButtons: Qt.LeftButton
                 acceptedModifiers: Qt.ShiftModifier
-                onTapped: root.moveTo(index, true)
+                onTapped: {
+                    root.focusList()
+                    root.moveTo(index, true)
+                }
             }
 
             TapHandler {
                 acceptedButtons: Qt.RightButton
                 onTapped: function(eventPoint) {
+                    root.focusList()
                     // On a row outside the selection, the menu is for that row alone
                     if (!root.isSelected(index))
                         root.moveTo(index, false)
@@ -577,6 +683,8 @@ ColumnLayout {
 
             contentItem: RowLayout {
                 spacing: 0
+                // Columns that do not fit stop short of the scroll bar
+                clip: true
 
                 // Name: file type icon and name, shortened in the middle so
                 // the extension stays visible
@@ -615,7 +723,7 @@ ColumnLayout {
                 }
 
                 // Path: the containing folder, shortened from the start so its
-                // deepest folders stay visible; clicking the text opens it
+                // deepest folders stay visible; double-clicking the text opens it
                 Item {
                     visible: root.shown("path")
                     Layout.preferredWidth: root.colWidth("path")
@@ -629,29 +737,28 @@ ColumnLayout {
                         anchors.leftMargin: Style.marginSmall
                         anchors.rightMargin: Style.marginSmall
                         text: row.folder
-                        color: linkArea.containsMouse && !row.highlighted
+                        color: linkHover.hovered && !row.highlighted
                             ? Kirigami.Theme.linkColor : row.textColor
-                        opacity: linkArea.containsMouse ? 1 : row.dim
+                        opacity: linkHover.hovered ? 1 : row.dim
                         font.pointSize: Style.fontSizeNormal
-                        font.underline: linkArea.containsMouse
+                        font.underline: linkHover.hovered
                         elide: Text.ElideLeft
                         textFormat: Text.PlainText
                         verticalAlignment: Text.AlignVCenter
                     }
-                    MouseArea {
-                        id: linkArea
+                    // Hover only: clicks go to the row, so a stray click
+                    // selects it rather than opening the folder
+                    Item {
                         x: pathLabel.x
                         width: Math.min(pathLabel.paintedWidth, pathLabel.width)
                         height: parent.height
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            root.moveTo(index, false)
-                            root.openFolderRequested(model.path)
+
+                        HoverHandler {
+                            id: linkHover
                         }
-                        ToolTip.visible: containsMouse
+                        ToolTip.visible: linkHover.hovered
                         ToolTip.delay: Kirigami.Units.toolTipDelay
-                        ToolTip.text: "Open " + row.folder
+                        ToolTip.text: "Double-click to open " + row.folder
                     }
                 }
 

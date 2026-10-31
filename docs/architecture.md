@@ -265,8 +265,9 @@ that carries the selected files out of the window.
 
 The selected rows live in Rust (`search/selection.rs`, a Roaring bitmap of
 row numbers, so a Shift+click range over a million rows stays small); with none
-selected, the current row stands for the selection. Every results key goes
-through the search field, which keeps focus while rows are clicked. Each
+selected, the current row stands for the selection. Results keys work from
+the search field and, after a click on a row moves focus there, from the
+list, where typing goes back to the search field. Each
 search also builds a `Highlight` from its query (`search/highlight.rs`), and
 the model's `nameMarkup` role gives the file name as Qt StyledText with the
 matched words, or regex matches, in bold.

@@ -299,6 +299,14 @@ ApplicationWindow {
                 onContextMenuRequested: function(paths, globalX, globalY) {
                     engine.show_context_menu(paths, globalX, globalY)
                 }
+                onTypedToSearch: function(text, erase) {
+                    searchBar.forceActiveFocus()
+                    searchBar.cursorPosition = searchBar.text.length
+                    if (erase)
+                        searchBar.remove(searchBar.text.length - 1, searchBar.text.length)
+                    else
+                        searchBar.insert(searchBar.text.length, text)
+                }
                 onCopyRequested: function(paths) {
                     engine.copy_files(paths)
                 }
@@ -385,6 +393,14 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+O"
         onActivated: openContainingFolder()
+    }
+    // Back to the search field from the list, its text selected
+    Shortcut {
+        sequences: ["Ctrl+L", "Ctrl+F"]
+        onActivated: {
+            searchBar.forceActiveFocus()
+            searchBar.selectAll()
+        }
     }
     // The selected result's menu. A shortcut takes the key before the search
     // field sees it, which would otherwise open its own edit menu as well.
@@ -506,6 +522,10 @@ ApplicationWindow {
                 Label { text: "Extend the selection"; font.pointSize: Style.fontSizeNormal }
                 Label { text: "Ctrl+Click"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Add or remove a result"; font.pointSize: Style.fontSizeNormal }
+                Label { text: "Ctrl+A"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Select all results (after clicking one)"; font.pointSize: Style.fontSizeNormal }
+                Label { text: "Ctrl+L / Ctrl+F"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Back to the search field"; font.pointSize: Style.fontSizeNormal }
 
                 Label { text: "PgUp / PgDn"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Move a page of results"; font.pointSize: Style.fontSizeNormal }
@@ -515,6 +535,8 @@ ApplicationWindow {
 
                 Label { text: "Enter"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Open file or folder"; font.pointSize: Style.fontSizeNormal }
+                Label { text: "Double-click path"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Open the containing folder"; font.pointSize: Style.fontSizeNormal }
 
                 Label { text: "Ctrl+O"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Open containing folder"; font.pointSize: Style.fontSizeNormal }
