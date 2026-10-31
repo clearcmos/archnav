@@ -105,6 +105,6 @@ QtObject {
             return d.toLocaleDateString(Qt.locale(), "MMM d") + " " + d.toLocaleTimeString(Qt.locale(), "h:mm ap")
         }
         // Older: show full date
-        return d.toLocaleDateString(Qt.locale(), "yyyy-MM-dd h:mm ap")
+        return d.toLocaleDateString(Qt.locale(), "yyyy-MM-dd") + " " + d.toLocaleTimeString(Qt.locale(), "h:mm ap")
     }
 }
