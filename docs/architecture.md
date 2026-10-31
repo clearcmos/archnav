@@ -28,7 +28,8 @@ The design aims for:
 ┌──────────────────────────────▼───────────────────────────────────────────┐
 │ Bridge (src/bridge/)                                                     │
 │   SearchEngine (the results list model): initialize, search, roles       │
-│     (path, name, size, mtime, icon), bookmarks, columns, open, menus     │
+│     (path, name, bold matches, size, mtime, icon), selection, copy,      │
+│     drag, bookmarks, columns, window size, open, menus                   │
 │   PreviewBridge: request_preview, clear_preview, preview text/image      │
 └──────────────────────────────┬───────────────────────────────────────────┘
 ┌──────────────────────────────▼───────────────────────────────────────────┐
@@ -250,12 +251,25 @@ the conventions and the reasons behind them.
 
 ## Context menu
 
-`context_menu.cpp` builds a QMenu with Dolphin-style actions: Open, Open With
-(from `mimeapps.list`), Cut, Copy, Copy Location, Duplicate Here, Rename, Move
-to Trash, Delete (confirmed), Move to New Folder, Open Terminal Here, Open as
-Administrator, Compress, and Properties, the last through the freedesktop
-`FileManager1.ShowItemProperties` D-Bus call, which also works on network
-mounts. QML asks for it through `SearchEngine::show_context_menu`.
+`context_menu.cpp` builds a QMenu with Dolphin-style actions for one file or
+a selection: Open, Open With (from `mimeapps.list`, through
+`KIO::ApplicationLauncherJob`), Cut, Copy, Copy Location, Duplicate Here,
+Rename, Move to Trash, Delete (confirmed), Move to New Folder, Open Terminal
+Here, Open as Administrator, Compress, and Properties, the last through the
+freedesktop `FileManager1.ShowItemProperties` D-Bus call, which also works on
+network mounts. QML asks for it through `SearchEngine::show_context_menu`.
+The same file holds the clipboard copy (Ctrl+C, Ctrl+Alt+C) and the `QDrag`
+that carries the selected files out of the window.
+
+## Selection and highlighting
+
+The selected rows live in Rust (`search/selection.rs`, a Roaring bitmap of
+row numbers, so a Shift+click range over a million rows stays small); with none
+selected, the current row stands for the selection. Every results key goes
+through the search field, which keeps focus while rows are clicked. Each
+search also builds a `Highlight` from its query (`search/highlight.rs`), and
+the model's `nameMarkup` role gives the file name as Qt StyledText with the
+matched words, or regex matches, in bold.
 
 ## Build
 
@@ -265,5 +279,6 @@ mounts. QML asks for it through `SearchEngine::show_context_menu`.
 3. Run MOC on `system_tray.cpp`
 4. Compile `context_menu.cpp`, `file_opener.cpp`, `mime_icon.cpp`,
    `qt_app.cpp`, `qt_debug_handler.cpp`, and `system_tray.cpp`
-5. Link the Qml, Quick, QuickControls2, Widgets, and DBus Qt modules and the
-   KDE Frameworks (KIO, KService, KCoreAddons)
+5. Link the Qml, Quick, QuickControls2, Widgets, DBus, and Network Qt modules
+   and the KDE Frameworks (KIO with KIOWidgets for the Open With dialog,
+   KService, KCoreAddons)

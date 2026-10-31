@@ -29,10 +29,23 @@ ColumnLayout {
     property string placeholderText: ""
     property string placeholderExplanation: ""
 
+    // Keeps the selection: the engine, or anything with its methods
+    // (selection_count, is_selected, select_range, toggle_selected,
+    // clear_selection, selected_paths)
+    property var selector: null
+    // Changes with every selection edit, so row highlights follow
+    property int selectionRevision: 0
+    // Where a Shift range starts: the row last clicked or moved to without Shift
+    property int anchorRow: 0
+
     signal itemDoubleClicked()
-    signal contextMenuRequested(string path, int globalX, int globalY)
+    signal contextMenuRequested(var paths, int globalX, int globalY)
     signal openFolderRequested(string path)
     signal headerClicked(string key)
+    signal copyRequested(var paths)
+    signal copyLocationRequested(var paths)
+    // Main runs the drag, which returns after the drop
+    signal dragRequested(var paths)
     // The user resized or hid a column; Main persists layoutJson()
     signal layoutEdited()
 
@@ -199,64 +212,134 @@ ColumnLayout {
         ? Math.max(nameMinWidth, availableWidth - othersWidth)
         : Math.max(nameMinWidth, Math.min(Math.round(widths.name * Style.zoomFactor), availableWidth - othersWidth))
 
-    // Select row `i`, clamped to the list, and scroll it into view
-    function moveTo(i) {
+    // Whether row `i` is selected; with no selection, the current row is
+    function isSelected(i) {
+        if (selector && selector.selection_count > 0)
+            return selectionRevision >= 0 && selector.is_selected(i)
+        return i === listView.currentIndex
+    }
+
+    // Paths of the selected rows, or of the current row
+    function selectedPaths() {
+        if (selector && selector.selection_count > 0)
+            return selector.selected_paths()
+        var item = listView.currentItem
+        return item && item.filePath ? [item.filePath] : []
+    }
+
+    // Make row `i` current and scroll it into view. With `extend`, select
+    // from the anchor to it; otherwise the selection is just this row again.
+    function moveTo(i, extend) {
         if (listView.count === 0)
             return
-        listView.currentIndex = Math.max(0, Math.min(listView.count - 1, i))
-        listView.positionViewAtIndex(listView.currentIndex, ListView.Contain)
+        i = Math.max(0, Math.min(listView.count - 1, i))
+        listView.currentIndex = i
+        listView.positionViewAtIndex(i, ListView.Contain)
+        if (extend && selector) {
+            selector.select_range(anchorRow, i, false)
+        } else {
+            anchorRow = i
+            if (selector)
+                selector.clear_selection()
+        }
     }
 
-    function moveDown() {
-        moveTo(listView.currentIndex + 1)
-    }
-
-    function moveUp() {
-        moveTo(listView.currentIndex - 1)
+    // Ctrl+click: add or remove row `i`, keeping the rest
+    function toggleRow(i) {
+        if (!selector)
+            return
+        // Until now the current row stood for the selection; keep it
+        if (selector.selection_count === 0 && listView.currentIndex >= 0)
+            selector.select_range(listView.currentIndex, listView.currentIndex, false)
+        selector.toggle_selected(i)
+        listView.currentIndex = i
+        anchorRow = i
     }
 
     // Rows a page moves: what fits in the view, less one kept for context
     readonly property int pageRows: Math.max(1, Math.floor(listView.height / Style.rowHeight) - 1)
 
-    // Page Up/Down and Home/End, for whichever has focus: the search field
-    // keeps it, but clicking a row takes it. With Shift, Home and End still
-    // select text in the search field, and with no results they move its
-    // cursor. Returns whether the key was used.
-    function handleNavigationKey(event) {
+    // Keys for the results, from the search field `textField`, which keeps
+    // focus while rows are clicked. Arrows and Page Up/Down move, Shift
+    // extending the selection; Home/End jump to the first and last result
+    // (with Shift, or with no results, they act on the search text). Ctrl+C
+    // copies the selected files unless search text is selected, and
+    // Ctrl+Alt+C copies their locations. Returns whether the key was used.
+    function handleKey(event, textField) {
         var mods = event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
-        if (mods !== Qt.NoModifier)
+        if (event.matches(StandardKey.Copy) && textField.selectedText === "") {
+            var files = selectedPaths()
+            if (files.length > 0)
+                copyRequested(files)
+            return files.length > 0
+        }
+        if (event.key === Qt.Key_C && mods === (Qt.ControlModifier | Qt.AltModifier)) {
+            var locations = selectedPaths()
+            if (locations.length > 0)
+                copyLocationRequested(locations)
+            return locations.length > 0
+        }
+        var shift = mods === Qt.ShiftModifier
+        if (mods !== Qt.NoModifier && !shift)
             return false
+        var current = listView.currentIndex
         switch (event.key) {
+        case Qt.Key_Down:
+            moveTo(current + 1, shift)
+            return true
+        case Qt.Key_Up:
+            moveTo(current - 1, shift)
+            return true
         case Qt.Key_PageDown:
-            moveTo(listView.currentIndex + pageRows)
+            moveTo(current + pageRows, shift)
             return true
         case Qt.Key_PageUp:
-            moveTo(listView.currentIndex - pageRows)
+            moveTo(current - pageRows, shift)
             return true
         case Qt.Key_Home:
-            if (listView.count === 0)
-                return false
-            moveTo(0)
-            return true
         case Qt.Key_End:
-            if (listView.count === 0)
+            if (listView.count === 0 || shift)
                 return false
-            moveTo(listView.count - 1)
+            moveTo(event.key === Qt.Key_Home ? 0 : listView.count - 1, false)
             return true
         }
         return false
     }
 
-    // The selected row's context menu, opened below its name
+    // The selection's context menu, at (x, y) in `item`
+    function requestContextMenu(item, x, y) {
+        var paths = selectedPaths()
+        if (paths.length === 0)
+            return
+        var p = item.mapToGlobal(x, y)
+        contextMenuRequested(paths, p.x, p.y)
+    }
+
+    // From the keyboard: below the current row's name
     function openContextMenu() {
         if (listView.currentIndex < 0)
             return
         listView.positionViewAtIndex(listView.currentIndex, ListView.Contain)
         var item = listView.currentItem
-        if (!item)
-            return
-        var p = item.mapToGlobal(rowPadding + Style.iconSize, item.height)
-        contextMenuRequested(item.filePath, p.x, p.y)
+        if (item)
+            requestContextMenu(item, rowPadding + Style.iconSize, item.height)
+    }
+
+    // A drag from row `i` carries the selection when `i` is in it, else `i`
+    // alone. The drag runs its own event loop until the drop and takes the
+    // release with it, so it starts after this handler returns, and the
+    // handler is reset afterwards.
+    function startDrag(i, handler) {
+        if (!isSelected(i))
+            moveTo(i, false)
+        var paths = selectedPaths()
+        Qt.callLater(function() {
+            dragRequested(paths)
+            if (handler) {
+                handler.enabled = false
+                handler.enabled = true
+            }
+        })
     }
 
     // Column header
@@ -395,11 +478,6 @@ ColumnLayout {
         boundsBehavior: Flickable.StopAtBounds
         highlightMoveDuration: 0
 
-        // Up and Down are the view's own; these work after a click on a row
-        Keys.onPressed: function(event) {
-            event.accepted = root.handleNavigationKey(event)
-        }
-
         // A content view: the View color set, as Dolphin's file view uses
         Kirigami.Theme.colorSet: Kirigami.Theme.View
         Kirigami.Theme.inherit: false
@@ -419,7 +497,7 @@ ColumnLayout {
             rightPadding: root.rowPadding + root.scrollBarWidth
             topPadding: 0
             bottomPadding: 0
-            highlighted: ListView.isCurrentItem
+            highlighted: root.isSelected(index)
             Kirigami.StyleHints.useAlternateBackgroundColor: true
 
             readonly property color textColor: highlighted
@@ -449,18 +527,51 @@ ColumnLayout {
                 return p.endsWith("/" + fn) ? p.substring(0, p.length - fn.length - 1) : p
             }
 
-            onClicked: listView.currentIndex = index
             onDoubleClicked: {
                 listView.currentIndex = index
                 root.itemDoubleClicked()
             }
 
+            // A click selects the row, Ctrl+click adds or removes it, and
+            // Shift+click selects from the anchor
+            TapHandler {
+                acceptedButtons: Qt.LeftButton
+                acceptedModifiers: Qt.NoModifier
+                onTapped: root.moveTo(index, false)
+            }
+            TapHandler {
+                acceptedButtons: Qt.LeftButton
+                acceptedModifiers: Qt.ControlModifier
+                onTapped: root.toggleRow(index)
+            }
+            TapHandler {
+                acceptedButtons: Qt.LeftButton
+                acceptedModifiers: Qt.ShiftModifier
+                onTapped: root.moveTo(index, true)
+            }
+
             TapHandler {
                 acceptedButtons: Qt.RightButton
                 onTapped: function(eventPoint) {
-                    listView.currentIndex = index
-                    var p = row.mapToGlobal(eventPoint.position.x, eventPoint.position.y)
-                    root.contextMenuRequested(model.path, p.x, p.y)
+                    // On a row outside the selection, the menu is for that row alone
+                    if (!root.isSelected(index))
+                        root.moveTo(index, false)
+                    root.requestContextMenu(row, eventPoint.position.x, eventPoint.position.y)
+                }
+            }
+
+            // Dragging rows hands the files to another app: Dolphin, a
+            // browser, a chat. It takes over from the list's flicking, which
+            // a mouse has no use for.
+            DragHandler {
+                id: dragHandler
+                target: null
+                acceptedButtons: Qt.LeftButton
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad | PointerDevice.Stylus
+                grabPermissions: PointerHandler.CanTakeOverFromAnything
+                onActiveChanged: {
+                    if (active)
+                        root.startDrag(index, dragHandler)
                 }
             }
 
@@ -484,13 +595,22 @@ ColumnLayout {
                     }
                     Label {
                         id: nameLabel
-                        text: model.filename || ""
+                        // Bold where the search matched
+                        text: model.nameMarkup || model.filename || ""
+                        textFormat: model.nameMarkup ? Text.StyledText : Text.PlainText
                         color: row.textColor
                         font.pointSize: Style.fontSizeNormal
                         elide: Text.ElideMiddle
-                        textFormat: Text.PlainText
                         Layout.fillWidth: true
                         Layout.rightMargin: Style.marginSmall
+
+                        // The full name when it is shortened
+                        HoverHandler {
+                            id: nameHover
+                        }
+                        ToolTip.visible: nameHover.hovered && truncated
+                        ToolTip.delay: Kirigami.Units.toolTipDelay
+                        ToolTip.text: model.filename || ""
                     }
                 }
 
@@ -526,7 +646,7 @@ ColumnLayout {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            listView.currentIndex = index
+                            root.moveTo(index, false)
                             root.openFolderRequested(model.path)
                         }
                         ToolTip.visible: containsMouse

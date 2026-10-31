@@ -72,6 +72,7 @@ fn main() {
         .qt_module("QuickControls2")
         .qt_module("Widgets") // Needed for QMenu context menus
         .qt_module("DBus") // Needed for FileManager1 properties dialog
+        .qt_module("Network") // KIO's job delegate headers include QSsl
         .files([
             "src/bridge/search_engine.rs",
             "src/bridge/preview_bridge.rs",
@@ -123,6 +124,9 @@ fn main() {
                 "KService",
                 "KIOCore",
                 "KIOGui",
+                "KIOWidgets",
+                "KJobWidgets",
+                "KWidgetsAddons",
                 "KIO",
                 "KCoreAddons",
                 "KConfig",
@@ -143,5 +147,7 @@ fn main() {
     println!("cargo:rustc-link-lib=KF6Service");
     println!("cargo:rustc-link-lib=KF6KIOCore");
     println!("cargo:rustc-link-lib=KF6KIOGui");
+    // KIO::JobUiDelegate, which shows KDE's Open With dialog
+    println!("cargo:rustc-link-lib=KF6KIOWidgets");
     println!("cargo:rustc-link-lib=KF6CoreAddons");
 }

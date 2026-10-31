@@ -23,6 +23,19 @@ ApplicationWindow {
         root.hide()
     }
 
+    // The window's size persists to config.json once a resize settles, so
+    // it survives a restart (Wayland leaves the position to KWin)
+    onWidthChanged: windowSaveTimer.restart()
+    onHeightChanged: windowSaveTimer.restart()
+    Timer {
+        id: windowSaveTimer
+        interval: Kirigami.Units.humanMoment
+        onTriggered: {
+            if (root.visible && root.visibility === Window.Windowed)
+                engine.save_window_size(root.width, root.height)
+        }
+    }
+
     // Keep the tray menu text ("Show archnav" / "Hide archnav") in sync
     onVisibleChanged: engine.set_window_visible(root.visible)
 
@@ -76,6 +89,7 @@ ApplicationWindow {
     function updateResults() {
         searching = false
         resultsList.currentIndex = engine.result_count > 0 ? 0 : -1
+        resultsList.anchorRow = 0
         // currentIndex may not change value across searches (0 -> 0), so the
         // onCurrentIndexChanged hook alone would leave a stale preview.
         updatePreview()
@@ -245,12 +259,10 @@ ApplicationWindow {
                 searchDebounce.restart()
             }
 
-            Keys.onDownPressed: resultsList.moveDown()
-            Keys.onUpPressed: resultsList.moveUp()
             Keys.onReturnPressed: openSelected()
             Keys.onEnterPressed: openSelected()
             Keys.onPressed: function(event) {
-                event.accepted = resultsList.handleNavigationKey(event)
+                event.accepted = resultsList.handleKey(event, searchBar)
             }
         }
 
@@ -266,6 +278,8 @@ ApplicationWindow {
                 SplitView.preferredWidth: previewVisible ? parent.width * 0.55 : parent.width
                 SplitView.minimumWidth: Kirigami.Units.gridUnit * 22
                 model: engine
+                selector: engine
+                selectionRevision: engine.selection_revision
                 nameSortState: root.nameSortState
                 pathSortState: root.pathSortState
                 sizeSortState: root.sizeSortState
@@ -282,8 +296,17 @@ ApplicationWindow {
 
                 onCurrentIndexChanged: updatePreview()
                 onItemDoubleClicked: openSelected()
-                onContextMenuRequested: function(path, globalX, globalY) {
-                    engine.show_context_menu(path, globalX, globalY)
+                onContextMenuRequested: function(paths, globalX, globalY) {
+                    engine.show_context_menu(paths, globalX, globalY)
+                }
+                onCopyRequested: function(paths) {
+                    engine.copy_files(paths)
+                }
+                onCopyLocationRequested: function(paths) {
+                    engine.copy_locations(paths)
+                }
+                onDragRequested: function(paths) {
+                    engine.start_drag(paths)
                 }
                 onOpenFolderRequested: function(path) {
                     engine.open_folder(path)
@@ -380,6 +403,24 @@ ApplicationWindow {
         onActivated: toggleFrecency()
     }
 
+    // Sort by a column, as a click on its header does (again to reverse)
+    Shortcut {
+        sequence: "Ctrl+1"
+        onActivated: sortByColumn("name")
+    }
+    Shortcut {
+        sequence: "Ctrl+2"
+        onActivated: sortByColumn("path")
+    }
+    Shortcut {
+        sequence: "Ctrl+3"
+        onActivated: sortByColumn("size")
+    }
+    Shortcut {
+        sequence: "Ctrl+4"
+        onActivated: sortByColumn("date")
+    }
+
     // Help overlay
     Shortcut {
         sequence: "F1"
@@ -406,6 +447,14 @@ ApplicationWindow {
 
     Component.onCompleted: {
         resultsList.applyLayout(engine.column_layout())
+        try {
+            var size = JSON.parse(engine.window_size() || "{}")
+            if (size.width > 0 && size.height > 0) {
+                root.width = size.width
+                root.height = size.height
+            }
+        } catch (e) {
+        }
         engine.initialize()
         // In --hidden mode (login autostart), stay in the tray: the index still
         // loads in the background and the toggle socket still comes up, but no
@@ -453,6 +502,10 @@ ApplicationWindow {
                 // Navigation
                 Label { text: "Up / Down"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Navigate results"; font.pointSize: Style.fontSizeNormal }
+                Label { text: "Shift+Up / Down"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Extend the selection"; font.pointSize: Style.fontSizeNormal }
+                Label { text: "Ctrl+Click"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Add or remove a result"; font.pointSize: Style.fontSizeNormal }
 
                 Label { text: "PgUp / PgDn"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Move a page of results"; font.pointSize: Style.fontSizeNormal }
@@ -468,6 +521,12 @@ ApplicationWindow {
 
                 Label { text: "Menu / Shift+F10"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Context menu"; font.pointSize: Style.fontSizeNormal }
+                Label { text: "Ctrl+C"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Copy the selected files"; font.pointSize: Style.fontSizeNormal }
+                Label { text: "Ctrl+Alt+C"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Copy their locations"; font.pointSize: Style.fontSizeNormal }
+                Label { text: "Drag"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Move or copy files to another app"; font.pointSize: Style.fontSizeNormal }
 
                 // Separator
                 Item { Layout.columnSpan: 2; Layout.preferredHeight: Style.marginSmall }
@@ -492,6 +551,8 @@ ApplicationWindow {
                 Label { text: "Ctrl+P"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Toggle preview pane"; font.pointSize: Style.fontSizeNormal }
 
+                Label { text: "Ctrl+1 to 4"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Sort by Name, Path, Size, Modified"; font.pointSize: Style.fontSizeNormal }
                 Label { text: "Ctrl+Shift+F"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Toggle frecency sort"; font.pointSize: Style.fontSizeNormal }
 

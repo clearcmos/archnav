@@ -31,6 +31,15 @@ pub struct AppConfig {
     /// Results table layout, restored when the window starts.
     #[serde(default)]
     pub columns: ColumnLayout,
+    /// Window size in logical pixels, restored when the window starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<WindowSize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowSize {
+    pub width: i32,
+    pub height: i32,
 }
 
 /// Widths and visibility of the results columns, keyed by column ("name",
@@ -65,6 +74,7 @@ impl Default for AppConfig {
             toggle_hotkey: default_toggle_hotkey(),
             exclude_paths: Vec::new(),
             columns: ColumnLayout::default(),
+            window: None,
         }
     }
 }
@@ -114,10 +124,29 @@ impl AppConfig {
         config
     }
 
-    /// Store a new column layout. Skipped, with a warning, when the config
-    /// file exists but does not parse: saving over it would replace the
-    /// user's bookmarks and excludes with defaults, which `load` avoids too.
+    /// Store a new column layout.
     pub fn save_columns(columns: ColumnLayout) {
+        Self::update_saved("column layout", |config| {
+            let changed = config.columns != columns;
+            config.columns = columns;
+            changed
+        });
+    }
+
+    /// Store the window size.
+    pub fn save_window(window: WindowSize) {
+        Self::update_saved("window size", |config| {
+            let changed = config.window != Some(window);
+            config.window = Some(window);
+            changed
+        });
+    }
+
+    /// Apply `change` to the saved config and write it if `change` reports a
+    /// difference. Skipped, with a warning, when the config file exists but
+    /// does not parse: saving over it would replace the user's bookmarks and
+    /// excludes with defaults, which `load` avoids too.
+    fn update_saved(what: &str, change: impl FnOnce(&mut Self) -> bool) {
         let path = Self::config_path();
         let mut config = if path.exists() {
             match std::fs::read_to_string(&path)
@@ -126,15 +155,14 @@ impl AppConfig {
             {
                 Ok(config) => config,
                 Err(e) => {
-                    warn!("Not saving column layout: config unreadable ({})", e);
+                    warn!("Not saving {}: config unreadable ({})", what, e);
                     return;
                 }
             }
         } else {
             Self::default()
         };
-        if config.columns != columns {
-            config.columns = columns;
+        if change(&mut config) {
             config.save();
         }
     }
@@ -255,6 +283,21 @@ mod tests {
         assert_eq!(bookmarks[0].name, "nas");
         assert_eq!(bookmarks[0].path, "/mnt/nas");
         assert!(bookmarks[0].is_network);
+    }
+
+    #[test]
+    fn window_size_round_trips_and_is_omitted_until_saved() {
+        let json = serde_json::to_string(&AppConfig::default()).unwrap();
+        assert!(!json.contains("window"));
+        let config: AppConfig =
+            serde_json::from_str(r#"{"window": {"width": 1200, "height": 800}}"#).unwrap();
+        assert_eq!(
+            config.window,
+            Some(WindowSize {
+                width: 1200,
+                height: 800
+            })
+        );
     }
 
     #[test]

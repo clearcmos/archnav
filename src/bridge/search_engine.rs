@@ -6,6 +6,8 @@ pub mod qobject {
     unsafe extern "C++" {
         include!("cxx-qt-lib/qstring.h");
         type QString = cxx_qt_lib::QString;
+        include!("cxx-qt-lib/qstringlist.h");
+        type QStringList = cxx_qt_lib::QStringList;
         include!("cxx-qt-lib/qmodelindex.h");
         type QModelIndex = cxx_qt_lib::QModelIndex;
         include!("cxx-qt-lib/qvariant.h");
@@ -31,6 +33,10 @@ pub mod qobject {
         #[qproperty(i32, total_indexed)]
         #[qproperty(i32, search_time_ms)]
         #[qproperty(i32, bookmark_count)]
+        // Rows picked with Ctrl/Shift; none means just the current row.
+        // The revision changes with every edit, for QML bindings to follow.
+        #[qproperty(i32, selection_count)]
+        #[qproperty(i32, selection_revision)]
         type SearchEngine = super::SearchEngineRust;
 
         // Signals
@@ -98,12 +104,49 @@ pub mod qobject {
         #[qinvokable]
         fn result_is_dir_at(self: &SearchEngine, row: i32) -> bool;
 
+        // Selection of result rows
+        #[qinvokable]
+        fn clear_selection(self: Pin<&mut SearchEngine>);
+
+        #[qinvokable]
+        fn toggle_selected(self: Pin<&mut SearchEngine>, row: i32);
+
+        // Select the rows from `from` to `to`, keeping the earlier selection
+        // with `keep`
+        #[qinvokable]
+        fn select_range(self: Pin<&mut SearchEngine>, from: i32, to: i32, keep: bool);
+
+        #[qinvokable]
+        fn is_selected(self: &SearchEngine, row: i32) -> bool;
+
+        // Paths of the selected rows, in list order
+        #[qinvokable]
+        fn selected_paths(self: &SearchEngine) -> QStringList;
+
+        // Clipboard and drag
+        #[qinvokable]
+        fn copy_files(self: &SearchEngine, paths: QStringList);
+
+        #[qinvokable]
+        fn copy_locations(self: &SearchEngine, paths: QStringList);
+
+        // Runs until the drop
+        #[qinvokable]
+        fn start_drag(self: &SearchEngine, paths: QStringList);
+
         // Results column layout as JSON ({"widths": {...}, "hidden": [...]})
         #[qinvokable]
         fn column_layout(self: &SearchEngine) -> QString;
 
         #[qinvokable]
         fn save_column_layout(self: &SearchEngine, layout: QString);
+
+        // Saved window size as JSON ({"width": .., "height": ..}), or empty
+        #[qinvokable]
+        fn window_size(self: &SearchEngine) -> QString;
+
+        #[qinvokable]
+        fn save_window_size(self: &SearchEngine, width: i32, height: i32);
 
         // File operations
         #[qinvokable]
@@ -118,7 +161,7 @@ pub mod qobject {
 
         // Context menu
         #[qinvokable]
-        fn show_context_menu(self: &SearchEngine, path: QString, x: i32, y: i32);
+        fn show_context_menu(self: &SearchEngine, paths: QStringList, x: i32, y: i32);
     }
 
     // QAbstractListModel
@@ -150,10 +193,15 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use cxx_qt::{CxxQtType, Threading};
-use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QModelIndex, QString, QVariant};
+use cxx_qt_lib::{
+    QByteArray, QHash, QHashPair_i32_QByteArray, QModelIndex, QString, QStringList, QVariant,
+};
 use tracing::info;
 
 use crate::search::engine::{CoreEngine, Results};
+use crate::search::highlight::Highlight;
+use crate::search::query::{ParsedQuery, SortOrder};
+use crate::search::selection::RowSelection;
 use crate::search::trigram::Bookmark;
 
 // Model roles, from Qt::UserRole, named for QML in role_names
@@ -163,6 +211,7 @@ const ROLE_IS_DIR: i32 = 258;
 const ROLE_ICON_NAME: i32 = 259;
 const ROLE_MTIME: i32 = 260;
 const ROLE_FILE_SIZE: i32 = 261;
+const ROLE_NAME_MARKUP: i32 = 262;
 
 /// Rust backing struct for the SearchEngine QObject.
 pub struct SearchEngineRust {
@@ -173,10 +222,16 @@ pub struct SearchEngineRust {
     total_indexed: i32,
     search_time_ms: i32,
     bookmark_count: i32,
+    selection_count: i32,
+    selection_revision: i32,
 
     // Internal state (not exposed as Qt properties)
     inner: Option<Arc<CoreEngine>>,
     results: Results,
+    /// Selected rows of `results`
+    selection: RowSelection,
+    /// Where the current query matched, for bold names
+    highlight: Option<Arc<Highlight>>,
     /// Sequence counter to discard stale search results
     search_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
@@ -190,8 +245,12 @@ impl Default for SearchEngineRust {
             total_indexed: 0,
             search_time_ms: 0,
             bookmark_count: 0,
+            selection_count: 0,
+            selection_revision: 0,
             inner: None,
             results: Results::default(),
+            selection: RowSelection::default(),
+            highlight: None,
             search_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
@@ -287,6 +346,9 @@ impl qobject::SearchEngine {
 
         std::thread::spawn(move || {
             let (results, total, elapsed) = inner.search(&query_str, sort_index);
+            let highlight =
+                Highlight::for_query(&ParsedQuery::parse(&query_str, SortOrder::MtimeDesc))
+                    .map(Arc::new);
             let result_count = results.len() as i32;
             let status =
                 crate::search::engine::results_status(results.len(), total, elapsed.as_millis());
@@ -315,6 +377,7 @@ impl qobject::SearchEngine {
                     "[BRIDGE] updating UI: query='{}', seq={}, results={}",
                     query_str_clone, my_seq, result_count
                 );
+                qobj.as_mut().rust_mut().highlight = highlight;
                 qobj.as_mut().set_results(results);
                 qobj.as_mut().set_result_count(result_count);
                 qobj.as_mut().set_search_time_ms(search_time);
@@ -330,8 +393,17 @@ impl qobject::SearchEngine {
         self.rust()
             .search_seq
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.as_mut().rust_mut().highlight = None;
         self.as_mut().set_results(Results::default());
         self.as_mut().set_result_count(0);
+        // The status bar goes back to what it shows before a search
+        if self.rust().engine_ready {
+            let indexed = self.rust().total_indexed.max(0) as usize;
+            self.as_mut().set_status_text(QString::from(&format!(
+                "{} files indexed",
+                crate::search::engine::group_digits(indexed)
+            )));
+        }
     }
 
     /// Swap in a new result set, telling attached views to reload.
@@ -343,6 +415,58 @@ impl qobject::SearchEngine {
         unsafe { self.as_mut().end_reset_model() };
         // Freeing a large result set here would stall the window
         crate::search::engine::drop_in_background(old);
+        // Rows of the old results mean nothing in the new ones
+        self.clear_selection();
+    }
+
+    /// Apply `change` to the selection, given the row count, and tell QML.
+    fn change_selection(mut self: Pin<&mut Self>, change: impl FnOnce(&mut RowSelection, u32)) {
+        let rows = u32::try_from(self.rust().results.len()).unwrap_or(u32::MAX);
+        change(&mut self.as_mut().rust_mut().selection, rows);
+        let count = i32::try_from(self.rust().selection.len()).unwrap_or(i32::MAX);
+        let revision = self.rust().selection_revision.wrapping_add(1);
+        self.as_mut().set_selection_count(count);
+        self.as_mut().set_selection_revision(revision);
+    }
+
+    fn clear_selection(self: Pin<&mut Self>) {
+        if !self.rust().selection.is_empty() {
+            self.change_selection(|selection, _| selection.clear());
+        }
+    }
+
+    fn toggle_selected(self: Pin<&mut Self>, row: i32) {
+        self.change_selection(|selection, rows| selection.toggle(row, rows));
+    }
+
+    fn select_range(self: Pin<&mut Self>, from: i32, to: i32, keep: bool) {
+        self.change_selection(|selection, rows| selection.select_range(from, to, keep, rows));
+    }
+
+    fn is_selected(&self, row: i32) -> bool {
+        self.rust().selection.contains(row)
+    }
+
+    fn selected_paths(&self) -> QStringList {
+        let results = &self.rust().results;
+        self.rust()
+            .selection
+            .iter()
+            .filter_map(|row| results.get(row))
+            .map(|r| QString::from(&*r.path))
+            .collect()
+    }
+
+    fn copy_files(&self, paths: QStringList) {
+        crate::context_menu::copy_files(&strings(&paths));
+    }
+
+    fn copy_locations(&self, paths: QStringList) {
+        crate::context_menu::copy_text(&strings(&paths).join("\n"));
+    }
+
+    fn start_drag(&self, paths: QStringList) {
+        crate::context_menu::start_drag(&strings(&paths));
     }
 
     fn data(&self, index: &QModelIndex, role: i32) -> QVariant {
@@ -359,6 +483,14 @@ impl qobject::SearchEngine {
             ))),
             ROLE_MTIME => QVariant::from(&r.mtime),
             ROLE_FILE_SIZE => QVariant::from(&(r.size as i64)),
+            // Undefined in QML when nothing in the name matched
+            ROLE_NAME_MARKUP => self
+                .rust()
+                .highlight
+                .as_ref()
+                .and_then(|h| h.markup(&r.path))
+                .map(|markup| QVariant::from(&QString::from(&markup)))
+                .unwrap_or_default(),
             _ => QVariant::default(),
         }
     }
@@ -372,6 +504,7 @@ impl qobject::SearchEngine {
             (ROLE_ICON_NAME, "iconName"),
             (ROLE_MTIME, "mtime"),
             (ROLE_FILE_SIZE, "fileSize"),
+            (ROLE_NAME_MARKUP, "nameMarkup"),
         ] {
             roles.insert(role, QByteArray::from(name));
         }
@@ -520,6 +653,20 @@ impl qobject::SearchEngine {
         }
     }
 
+    fn window_size(&self) -> QString {
+        crate::config::AppConfig::load()
+            .window
+            .and_then(|size| serde_json::to_string(&size).ok())
+            .map(|json| QString::from(&json))
+            .unwrap_or_default()
+    }
+
+    fn save_window_size(&self, width: i32, height: i32) {
+        if width > 0 && height > 0 {
+            crate::config::AppConfig::save_window(crate::config::WindowSize { width, height });
+        }
+    }
+
     /// Open a file using KIO::OpenUrlJob for proper Wayland focus handling.
     /// This uses the same mechanism as Dolphin for XDG activation tokens.
     fn open_file(&self, path: QString) {
@@ -552,13 +699,16 @@ impl qobject::SearchEngine {
         crate::system_tray::set_global_window_visible(visible);
     }
 
-    /// Show a KDE context menu for the given file path.
-    fn show_context_menu(&self, path: QString, x: i32, y: i32) {
-        let path_str = path.to_string();
+    /// Show a KDE context menu for the given files.
+    fn show_context_menu(&self, paths: QStringList, x: i32, y: i32) {
         // Context menu must be shown on the main thread, so we call it directly
         let menu = crate::context_menu::ContextMenu::new();
-        menu.show(&path_str, x, y);
+        menu.show(&strings(&paths), x, y);
     }
+}
+
+fn strings(list: &QStringList) -> Vec<String> {
+    list.iter().map(|s| s.to_string()).collect()
 }
 
 /// The last component of `path`, or all of it when it has none.

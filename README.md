@@ -13,11 +13,12 @@ index of every path under your bookmarks and searches it as you type.
 - **Unified search** - Search all bookmarks simultaneously; every match is listed, and the list creates rows only as they scroll into view
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
-- **Results table** - File-type icons from the icon theme, click a header to sort, drag its edge to resize or double-click the edge to fit the column, right-click it to show or hide Path, Size, and Modified; widths and hidden columns are remembered. Click a path to open its folder
+- **Results table** - File-type icons from the icon theme, the matched text in bold, and the full name in a tooltip when it is shortened. Click a header (or press Ctrl+1 to 4) to sort, drag its edge to resize or double-click the edge to fit the column, right-click it to show or hide Path, Size, and Modified; widths, hidden columns, and the window size are remembered. Click a path to open its folder
+- **Selection** - Ctrl+click, Shift+click, or Shift with the arrow keys selects several results; drag them to Dolphin, a browser, or any other app, or copy them with Ctrl+C (Ctrl+Alt+C copies their paths)
 - **Live updates** - inotify applies changes under local bookmarks as they happen (folders it cannot read are skipped); network mounts are rescanned every 5 minutes
 - **Keyboard-centric** - Focus stays in the search field: arrows, Page Up/Down, and Home/End move through the results, Enter opens, the Menu key opens the context menu, Esc hides to the tray
 - **System tray** - Persists in tray when closed, toggle with click or global hotkey
-- **Context menu** - Right-click (or the Menu key) for Open With, Copy, Cut, Rename, Delete, Properties
+- **Context menu** - Right-click (or the Menu key) for Open With, Copy, Cut, Rename, Delete, Properties, on one result or the selection
 - **Zoom support** - Ctrl+=/- to scale UI
 - **Wayland native** - Works on KDE Plasma 6 Wayland; colors, fonts, and spacing follow the KDE theme (Kirigami and the Breeze desktop style)
 
@@ -72,11 +73,17 @@ This installs `archnav` to `/usr/bin/`, registers the desktop file, and ships th
 | `Arrow Up/Down` | Navigate results |
 | `Page Up/Down` | Move a page of results |
 | `Home` / `End` | First / last result (with no results, or with Shift, they act on the search text) |
-| `Enter` | Open file or folder |
+| `Shift+Up/Down`, `Shift+Page Up/Down` | Extend the selection |
+| `Ctrl+Click` / `Shift+Click` | Add or remove a result / select a range |
+| `Ctrl+C` | Copy the selected files (when no search text is selected) |
+| `Ctrl+Alt+C` | Copy their locations |
+| Drag | Copy or move the selected files to Dolphin or another app |
+| `Enter` | Open the current result |
 | `Ctrl+O` | Open containing folder |
 | `Ctrl+P` | Toggle preview pane |
 | `Ctrl+R` | Rescan all bookmarks |
 | `Ctrl+B` | Manage bookmarks |
+| `Ctrl+1` to `Ctrl+4` | Sort by Name, Path, Size, Modified (again to reverse) |
 | `Ctrl+Shift+F` | Toggle frecency sort |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+Scroll` | Zoom in / out |
 | `Ctrl+0` | Reset zoom |
@@ -152,6 +159,8 @@ Config stored at `~/.config/archnav/config.json`:
 - `columns` is written by the window when a column is resized or hidden. Name
   fills the width the others leave until a separator is dragged, then keeps
   its own width; Reset Columns in the header's right-click menu restores that
+- `window` (absent until the window is first resized) holds the window size,
+  restored at the next start
 - `exclude_paths` lists locations to exclude from indexing, recursively;
   entries are absolute paths with an optional leading `~`
 - A config file with a syntax error is left untouched at startup (defaults are
