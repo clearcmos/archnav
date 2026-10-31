@@ -6,7 +6,7 @@ use tracing::{info, warn};
 
 use crate::search::engine::CoreEngine;
 use crate::search::query::{FileTypeMode, ParsedQuery, SortOrder};
-use crate::search::trigram::Bookmark;
+use crate::search::trigram::{Bookmark, SearchResult};
 
 /// IPC request types for backward compatibility with the old daemon protocol.
 #[derive(serde::Deserialize)]
@@ -16,6 +16,8 @@ struct SearchRequest {
     mode: String,
     query: String,
     extension: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: usize,
 }
 
 #[derive(serde::Deserialize)]
@@ -24,6 +26,21 @@ struct SearchAllRequest {
     bookmark_paths: Vec<String>,
     query: String,
     extension: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+/// A SEARCH_ALL result: the match and the name of the bookmark it is under.
+#[derive(serde::Serialize)]
+struct SearchAllEntry<'a> {
+    #[serde(flatten)]
+    result: &'a SearchResult,
+    bookmark: &'a str,
+}
+
+/// Results per response when a request names no `limit`; 0 asks for all.
+fn default_limit() -> usize {
+    500
 }
 
 fn socket_path() -> String {
@@ -121,7 +138,7 @@ fn handle_search(json: &str, engine: &CoreEngine) -> String {
     query.file_type_mode = file_type_mode;
 
     let start = std::time::Instant::now();
-    let results = idx.search(&query, &req.bookmark_path);
+    let results = idx.search(&query, &req.bookmark_path, req.limit);
     let elapsed = start.elapsed().as_millis() as u64;
     let total = idx.file_count();
 
@@ -149,8 +166,17 @@ fn handle_search_all(json: &str, engine: &CoreEngine) -> String {
     }
 
     let start = std::time::Instant::now();
-    let (results, total_matches) = idx.search_all_counted(&query, &req.bookmark_paths);
+    let (results, total_matches) = idx.search_all_counted(&query, &req.bookmark_paths, req.limit);
     let elapsed = start.elapsed().as_millis() as u64;
+    let results: Vec<SearchAllEntry> = results
+        .iter()
+        .map(|result| SearchAllEntry {
+            result,
+            bookmark: idx
+                .bookmark_name_of(&result.path, &req.bookmark_paths)
+                .unwrap_or_default(),
+        })
+        .collect();
     let total = idx.file_count();
 
     let resp = serde_json::json!({

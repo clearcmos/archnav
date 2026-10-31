@@ -27,8 +27,8 @@ The design aims for:
                                │ QObject properties, invokables, signals
 ┌──────────────────────────────▼───────────────────────────────────────────┐
 │ Bridge (src/bridge/)                                                     │
-│   SearchEngine: initialize, search, result accessors (path, size, mtime, │
-│     icon name), bookmarks, column layout, open file/folder, context menu │
+│   SearchEngine (the results list model): initialize, search, roles       │
+│     (path, name, size, mtime, icon), bookmarks, columns, open, menus     │
 │   PreviewBridge: request_preview, clear_preview, preview text/image      │
 └──────────────────────────────┬───────────────────────────────────────────┘
 ┌──────────────────────────────▼───────────────────────────────────────────┐
@@ -66,13 +66,16 @@ Intersection: {1, 99}  <- candidates
 Final filter: the query must match the path (or, for folder:, the folder name)
 ```
 
-The intersection walks the shortest posting list and keeps the ids every other
-list contains, so a common trigram costs one lookup per candidate rather than a
-copy of its list. The candidate checks (words, `!words`, extension, size and
-date filters) run on all cores with rayon. A query with no trigram to narrow
-with skips candidate collection and checks every entry in parallel. Only the
-top `max_results` matches are sorted, after a linear selection picks them, and
-the full match count goes to the status bar ("500 of 146,630 results").
+Posting lists are Roaring bitmaps (the `roaring` crate): compressed sets of
+file ids that intersect container by container. The intersection starts from
+the shortest list, so each step works on the smallest set so far. The candidate
+checks (words, `!words`, extension, size and date filters) run on all cores
+with rayon. A query with no trigram to narrow with skips candidate collection
+and checks every entry in parallel. Matches are sorted on a key computed once
+per entry (a file name or frecency score is too slow to work out again in every
+comparison), and every match is returned. When `max_results` is set, a linear
+selection picks the top ones before sorting, and the status bar shows the full
+count ("500 of 146,944 results").
 
 plocate and Google Code Search use the same approach. The cost is set by the
 posting lists the query touches: a rare run of characters narrows the
@@ -81,30 +84,38 @@ check, and a query with no three-character run (`ab`, or `*.rs` alone) has no
 trigram to narrow with and checks every path.
 
 `archnav --benchmark` measures this against the real index, with the search
-cache cleared between runs. On 1.44M files (i7-13700K, 24 threads), medians
-were:
+cache cleared between runs, and prints the resident memory once the index is
+loaded. On 1.46M files (i7-13700K, 24 threads), medians were:
 
 | Query | Median | Matches |
 |---|---|---|
-| `PKGBUILD` | 71 µs | 57 |
-| `report pdf` | 84 µs | 17 |
-| `archnav` | 370 µs | 1,418 |
-| `screenshot` | 404 µs | 1,656 |
-| `package.json` | 409 µs | 889 |
-| `main` | 734 µs | 11,212 |
-| `test` | 5.4 ms | 85,908 |
-| `size:>1G` | 10.6 ms | 1,938 |
-| `dm:thisweek` | 11.0 ms | 19,350 |
-| `config` | 13.2 ms | 146,630 |
-| `*.rs` | 18.6 ms | 7,628 |
-| `ab` | 19.4 ms | 152,944 |
+| `PKGBUILD` | 55 µs | 57 |
+| `report pdf` | 54 µs | 17 |
+| `archnav` | 398 µs | 1,364 |
+| `package.json` | 405 µs | 885 |
+| `screenshot` | 517 µs | 1,660 |
+| `main` | 984 µs | 12,307 |
+| `test` | 3.2 ms | 85,903 |
+| `config` | 5.5 ms | 146,944 |
+| `size:>1G` | 8.3 ms | 1,938 |
+| `dm:thisweek` | 10.1 ms | 32,323 |
+| `*.rs` | 15.9 ms | 7,603 |
+| `ab` | 21.1 ms | 153,454 |
 
-Results are capped at `max_results` (500 by default).
+A single letter matches nearly every path: `a` returns 1.44M results in
+about 50 ms sorted by date and about 120 ms sorted by name.
+
+The results go to QML as a list model (`SearchEngine` derives from
+`QAbstractListModel`), so the view creates delegates only for the rows on
+screen, and file-type icons are looked up as rows scroll into view. The
+engine's cache and the model share one `Arc` of the results, and a replaced
+result set is freed on a pool thread, since releasing a million shared paths
+takes longer than the search that replaced them.
 
 `SearchCache` in `engine.rs` keeps the previous query's results. When the new
 query can only remove matches (typing `con`, then `conf`; adding a word or a
-`!word`), it filters those results instead of searching again, unless they were
-truncated at the result cap. `ParsedQuery::narrows` decides: every old word must
+`!word`), it filters those results in parallel instead of searching again,
+unless they were truncated at a result cap. `ParsedQuery::narrows` decides: every old word must
 sit inside a new word, every old `!word` must contain a new one (excluding "ba"
 drops fewer paths than excluding "b"), and every filter must be unchanged.
 
@@ -112,7 +123,8 @@ drops fewer paths than excluding "b"), and every filter must be unchanged.
 
 SQLite (`~/.local/share/archnav/index.db`, WAL mode) holds:
 - `files`: id, path (unique), is_dir, mtime, size
-- `posting_lists`: trigram, packed file ids; the startup cache
+- `posting_lists`: trigram, serialized Roaring bitmap of file ids; the
+  startup cache (about 70 MB for 1.46M files)
 - `meta`: `posting_lists_count` and `posting_lists_next_id` (cache
   validation), `max_file_id` (ids are never reused), `trigram_schema_version`
 - `bookmarks`, and `file_access` (open counts for frecency sorting)
@@ -121,14 +133,21 @@ Trigrams are not stored per file: they are a pure function of the path.
 
 On startup:
 1. If the cached posting-list count is within 1% of the file count, load the
-   files and posting lists directly (the fast path, about 2-5 s for 1.4M
+   files and posting lists directly (the fast path, under 1 s for 1.46M
    files), then compute trigrams for files added since the cache was built.
 2. Otherwise compute every file's trigrams from its path, rebuild the posting
    lists, and save them as the new cache.
 
 An older database is migrated once when opened: the per-file trigram table and
-two unused indexes are dropped and the file is compacted with VACUUM. The WAL
-is truncated to 64 MiB after checkpoints.
+two unused indexes are dropped and the file is compacted with VACUUM. A new
+posting-list format (`TRIGRAM_SCHEMA_VERSION`) drops the cache and its count,
+compacts the file, and rebuilds the cache on that start (about 10 s for 1.46M
+files). The WAL is truncated to 64 MiB after checkpoints.
+
+In memory, each path is stored once as an `Arc<str>` shared by `files`,
+`path_to_id`, and the results, and the posting lists' ~100M entries take about
+70 MB as Roaring bitmaps. The loaded index of 1.46M files is about 600 MB
+resident.
 
 All writes go through one database thread over a channel, batched up to 1000
 operations per transaction. Indexing goes through `scanner::index_path`, which
@@ -226,6 +245,8 @@ the conventions and the reasons behind them.
   per line, each answered with one JSON line: `SEARCH <json>`,
   `SEARCH_ALL <json>`, `ADD_BOOKMARK <json>`, `RESCAN <path>`, `STATS`,
   `PING`. It keeps the protocol of the standalone daemon archnav replaced.
+  `SEARCH` and `SEARCH_ALL` return at most the request's `limit` results
+  (500 when absent, every match when 0).
 
 ## Context menu
 

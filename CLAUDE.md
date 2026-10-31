@@ -126,13 +126,15 @@ A root-level `PKGBUILD` (`pkgname=archnav-git`) pulls from the github remote, bu
 The search engine uses **trigram indexing** for substring matching:
 
 1. **Trigrams**: Each filename is split into 3-character overlapping sequences
-2. **Posting lists**: Map trigram -> set of file IDs containing it
-3. **Search**: Intersect the posting lists of every query word's trigrams (walking the shortest list and checking the others), then filter the candidates on all cores (rayon) and keep the top `max_results` with a linear selection before sorting; the full match count is reported alongside. A query with no trigram to narrow with (`ab`, `*.rs` alone, `size:>1G` alone) skips candidate collection and scans every entry in parallel
-4. **Persistence**: SQLite stores files + posting lists; fast load in about 2-5 s for 1.4M files
+2. **Posting lists**: Map trigram -> Roaring bitmap of the file IDs containing it
+3. **Search**: Intersect the posting lists of every query word's trigrams (shortest first), then filter the candidates on all cores (rayon) and sort every match on a key computed once per entry (`sort_keyed`); a `limit` (IPC, or config `max_results`) keeps the top ones with a linear selection first, and the full match count is reported alongside. A query with no trigram to narrow with (`ab`, `*.rs` alone, `size:>1G` alone) skips candidate collection and scans every entry in parallel
+4. **Persistence**: SQLite stores files + serialized posting lists; fast load in under 1 s for 1.46M files
 
 ### Performance Optimizations
 
-- **Posting list cache**: Pre-built posting lists stored in SQLite, so startup loads them instead of rebuilding
+- **Posting list cache**: Pre-built posting lists stored in SQLite, so startup loads them instead of rebuilding. Bump `TRIGRAM_SCHEMA_VERSION` whenever the blob format changes; the bump drops the cache, its `posting_lists_count`/`posting_lists_next_id` meta (a leftover count makes the next load trust an empty cache), and VACUUMs
+- **Memory**: paths are `Arc<str>`, stored once and shared by `files`, `path_to_id`, and results; posting lists are `RoaringBitmap`s, `optimize()`d after a rebuild so folder-path trigrams become run containers. About 600 MB resident for 1.46M files (it was about 1.5 GB with `HashSet<u32>` lists and duplicated path strings)
+- **Uncapped results**: `SearchEngine` is a `QAbstractListModel` (roles `path`, `filename`, `isDir`, `iconName`, `mtime`, `fileSize`), so QML creates delegates only for visible rows. Results are `engine::Results` (`Arc<Vec<SearchResult>>`) shared by the search cache and the model; replaced result sets are freed with `drop_in_background`, because releasing a million `Arc<str>` on the UI thread stalls the window
 - **Async watcher setup**: Engine reports "ready" immediately after index load; inotify watches are set up in background thread
 - **Count-based cache validation**: Compares cached file count vs actual to detect staleness
 - **Write only what changed**: every scan path (initial scan, reconcile, network rescan, inotify) goes through `scanner::index_path`. An entry whose `is_dir`/mtime/size match the index costs one stat and a read-locked lookup, with no write lock and no DB op; changed metadata is an in-place `UPDATE` (`DbOp::UpdateFile`), and only new paths are inserted. Re-saving every entry on each 5-minute NAS rescan used to write about 500 MiB per pass.
@@ -198,7 +200,8 @@ The search engine uses **trigram indexing** for substring matching:
 The IPC socket (`ipc.rs`) keeps the protocol of the old standalone daemon for
 scripts: one command per line, `SEARCH <json>`, `SEARCH_ALL <json>`,
 `ADD_BOOKMARK <json>`, `RESCAN <path>`, `STATS`, `PING`, each answered with
-one JSON line.
+one JSON line. `SEARCH` and `SEARCH_ALL` take an optional `limit` (500 when
+absent, 0 for every match).
 
 ## Config Structure
 
@@ -207,7 +210,6 @@ one JSON line.
   "bookmarks": [
     {"name": "home", "path": "/home/user", "is_network": false}
   ],
-  "max_results": 500,
   "toggle_hotkey": "Alt+`",
   "exclude_paths": ["~/Downloads", "/mnt/scratch"],
   "columns": {"widths": {"path": 300, "size": 80, "date": 140}, "hidden": ["path"]}
@@ -222,8 +224,9 @@ width, the way Dolphin stops sizing columns automatically once one is
 resized by hand. `AppConfig::save_columns` refuses to write over a config that
 does not parse, like `load`.
 
-`max_results` caps how many results a search returns (default 500, hard cap
-2000 via `MAX_RESULTS` in trigram.rs).
+`max_results` (optional) caps how many results the window lists; absent or 0
+(the default) lists every match. IPC requests carry their own `limit` (500
+when absent, 0 for every match).
 
 `exclude_paths` is an optional list of locations to exclude from indexing,
 recursively. Entries are absolute paths with an optional leading `~` (home);
@@ -297,7 +300,7 @@ and archnav's zoom (Ctrl+=/-) only multiplies them.
 
 The bridge uses cxx-qt macros to expose Rust types to QML:
 
-- **SearchEngine**: Main QObject with properties (`engine_ready`, `result_count`, `status_text`) and methods (`search()`, `initialize()`, `open_file()`, `show_context_menu()`, etc.)
+- **SearchEngine**: Main QObject and the results list model (`#[base = QAbstractListModel]`, overriding `data`, `rowCount`, `roleNames`; `set_results` wraps the swap in `beginResetModel`/`endResetModel`). Properties (`engine_ready`, `result_count`, `status_text`) and methods (`search()`, `clear_results()`, `initialize()`, `open_file()`, `show_context_menu()`, etc.)
 - **PreviewBridge**: Preview QObject with `preview_text`, `preview_type`, `item_count` properties
 
 Signals are defined in Rust and connected in QML (e.g., `onResultsReady`, `onEngine_readyChanged`).
@@ -340,7 +343,7 @@ Window close behavior:
 
 ## Known Behaviors
 
-- **Max results**: `max_results` from config (default 500), hard cap 2000
+- **Max results**: every match by default; config `max_results` caps the window, an IPC request's `limit` caps its response (default 500)
 - **Integrity check**: Every 60s, checks 5000 files per cycle; entries under a
   bookmark root that is currently unreachable (e.g. an unmounted share) are
   skipped, not purged

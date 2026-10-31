@@ -154,7 +154,7 @@ pub fn index_path(
     let unchanged = {
         let idx = index.read().unwrap();
         idx.path_to_id
-            .get(&path)
+            .get(path.as_str())
             .copied()
             .filter(|_| idx.is_current(&path, is_dir, mtime, size))
     };
@@ -162,6 +162,7 @@ pub fn index_path(
         return Upsert::Unchanged(id);
     }
 
+    let path: Arc<str> = path.into();
     let outcome = {
         let mut idx = index.write().unwrap();
         idx.upsert(path.clone(), is_dir, mtime, size)
@@ -247,7 +248,7 @@ pub fn reconcile_directory(
         // Check if already indexed
         let already_indexed = {
             let idx = index.read().unwrap();
-            idx.path_to_id.contains_key(&path_str)
+            idx.path_to_id.contains_key(path_str.as_str())
         };
 
         if already_indexed {

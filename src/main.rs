@@ -92,7 +92,19 @@ fn main() {
         );
         let load_time = load_start.elapsed();
         let file_count = engine.file_count();
-        println!("Loaded {} files in {:.2?}\n", file_count, load_time);
+        println!("Loaded {} files in {:.2?}", file_count, load_time);
+        // Resident memory with the index loaded, from the kernel's own count
+        if let Some(rss) = std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("VmRSS:"))
+                    .map(String::from)
+            })
+        {
+            println!("{}", rss.split_whitespace().collect::<Vec<_>>().join(" "));
+        }
+        println!();
 
         let queries = vec![
             // Short queries (common trigram hits)

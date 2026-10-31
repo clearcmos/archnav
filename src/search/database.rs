@@ -1,5 +1,5 @@
+use roaring::RoaringBitmap;
 use rusqlite::{params, Connection};
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Sender};
 use std::time::Instant;
@@ -11,7 +11,7 @@ use super::trigram::{AccessInfo, Bookmark, FileEntry, TrigramIndex};
 const DB_PATH: &str = ".local/share/archnav/index.db";
 
 /// Schema version for trigram cache. Bump to force rebuild.
-const TRIGRAM_SCHEMA_VERSION: &str = "2";
+const TRIGRAM_SCHEMA_VERSION: &str = "3";
 
 pub enum DbOp {
     /// Insert a newly indexed file.
@@ -126,6 +126,14 @@ impl Database {
         if current_version.as_deref() != Some(TRIGRAM_SCHEMA_VERSION) {
             info!("Trigram schema version changed, rebuilding cache");
             conn.execute("DELETE FROM posting_lists", [])?;
+            // Without its count the emptied cache cannot pass for current
+            conn.execute(
+                "DELETE FROM meta WHERE key IN ('posting_lists_count', 'posting_lists_next_id')",
+                [],
+            )?;
+            // Give the old cache's space back to the filesystem; the rebuilt
+            // one is written into a compact file
+            conn.execute_batch("VACUUM")?;
             conn.execute(
                 "INSERT OR REPLACE INTO meta (key, value) VALUES ('trigram_schema_version', ?1)",
                 params![TRIGRAM_SCHEMA_VERSION],
@@ -274,7 +282,7 @@ impl Database {
         let rows = stmt.query_map([], |row| {
             Ok(FileEntry {
                 id: row.get(0)?,
-                path: row.get(1)?,
+                path: row.get::<_, String>(1)?.into(),
                 is_dir: row.get::<_, i32>(2)? != 0,
                 mtime: row.get(3)?,
                 size: row.get(4)?,
@@ -310,9 +318,19 @@ impl Database {
             let (trigram_blob, id_blob) = row?;
             if trigram_blob.len() == 3 {
                 let trigram = [trigram_blob[0], trigram_blob[1], trigram_blob[2]];
-                let ids = unpack_u32_ids(&id_blob);
-                index.trigrams.insert(trigram, ids);
-                pl_count += 1;
+                match RoaringBitmap::deserialize_from(&id_blob[..]) {
+                    Ok(ids) => {
+                        index.trigrams.insert(trigram, ids);
+                        pl_count += 1;
+                    }
+                    Err(e) => {
+                        warn!("Corrupt posting list cache ({}), rebuilding", e);
+                        index.files.clear();
+                        index.path_to_id.clear();
+                        index.trigrams.clear();
+                        return Ok(None);
+                    }
+                }
             }
         }
 
@@ -363,7 +381,7 @@ impl Database {
         let rows = stmt.query_map([], |row| {
             Ok(FileEntry {
                 id: row.get(0)?,
-                path: row.get(1)?,
+                path: row.get::<_, String>(1)?.into(),
                 is_dir: row.get::<_, i32>(2)? != 0,
                 mtime: row.get(3)?,
                 size: row.get(4)?,
@@ -375,6 +393,12 @@ impl Database {
             let trigrams = TrigramIndex::compute_trigrams(&entry.path);
             index.add_with_trigrams(entry, &trigrams);
             count += 1;
+        }
+        // Path-component trigrams cover long runs of consecutive ids (a
+        // folder's files are scanned together), which run containers hold in
+        // a few bytes each
+        for ids in index.trigrams.values_mut() {
+            ids.optimize();
         }
 
         // Load bookmarks
@@ -417,7 +441,9 @@ impl Database {
 
             for (trigram, ids) in &index.trigrams {
                 let trigram_blob = trigram.as_slice();
-                let id_blob = pack_u32_ids(ids);
+                let mut id_blob = Vec::with_capacity(ids.serialized_size());
+                ids.serialize_into(&mut id_blob)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                 stmt.execute(params![trigram_blob, id_blob])?;
             }
         }
@@ -451,7 +477,7 @@ impl Database {
     fn save_file(&self, entry: &FileEntry) {
         if let Err(e) = self.conn.execute(
             "INSERT OR REPLACE INTO files (id, path, is_dir, mtime, size) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![entry.id, entry.path, entry.is_dir as i32, entry.mtime, entry.size],
+            params![entry.id, &*entry.path, entry.is_dir as i32, entry.mtime, entry.size],
         ) {
             warn!("Failed to save file: {}", e);
             return;
@@ -584,24 +610,6 @@ fn escape_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
-/// Pack a set of u32 IDs into a BLOB (4 bytes each, little-endian).
-fn pack_u32_ids(ids: &HashSet<u32>) -> Vec<u8> {
-    let mut blob = Vec::with_capacity(ids.len() * 4);
-    for &id in ids {
-        blob.extend_from_slice(&id.to_le_bytes());
-    }
-    blob
-}
-
-/// Unpack a BLOB into a HashSet of u32 IDs.
-fn unpack_u32_ids(blob: &[u8]) -> HashSet<u32> {
-    let mut ids = HashSet::with_capacity(blob.len() / 4);
-    for &bytes in blob.as_chunks::<4>().0 {
-        ids.insert(u32::from_le_bytes(bytes));
-    }
-    ids
-}
-
 /// Start a dedicated database writer thread. Returns the sender for queueing ops.
 pub fn start_db_thread(db: Database) -> Sender<DbOp> {
     let (tx, rx) = channel::<DbOp>();
@@ -728,6 +736,44 @@ mod fast_load_tests {
                 1,
                 "`otto *.mkv` must match exactly the backfilled file"
             );
+        }
+
+        cleanup(&path);
+    }
+
+    /// A schema bump drops the cached posting lists; the next load must
+    /// rebuild them from the paths instead of trusting the stale cache count.
+    #[test]
+    fn schema_bump_rebuilds_the_posting_lists() {
+        let path = temp_db_path();
+        cleanup(&path);
+
+        {
+            let db = Database::open_at(path.clone()).unwrap();
+            let mut idx = TrigramIndex::new();
+            idx.bookmarks.push(Bookmark {
+                name: "t".into(),
+                path: "/data".into(),
+                is_network: false,
+            });
+            db.save_bookmark(&idx.bookmarks[0]);
+            let (id, _) = idx.add("/data/alpha.txt".into(), false, 1, 1);
+            db.save_file(idx.files.get(&id).unwrap());
+            db.save_posting_lists(&idx).unwrap();
+            db.conn
+                .execute(
+                    "UPDATE meta SET value = 'old' WHERE key = 'trigram_schema_version'",
+                    [],
+                )
+                .unwrap();
+        }
+
+        {
+            let db = Database::open_at(path.clone()).unwrap();
+            let mut idx = TrigramIndex::new();
+            db.load_into_index(&mut idx).unwrap();
+            let q = ParsedQuery::parse("alpha", SortOrder::MtimeDesc);
+            assert_eq!(idx.search_all(&q, &[]).len(), 1);
         }
 
         cleanup(&path);

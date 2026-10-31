@@ -7,10 +7,10 @@ index of every path under your bookmarks and searches it as you type.
 
 ## Features
 
-- **Trigram-indexed search** - On a 1.4M-file index (i7-13700K, 24 threads), specific queries take under a millisecond, very common words like `config` (146,630 matches) about 13 ms, and a query with no three-character run (`ab`, or `*.rs` alone) about 20 ms, since it checks every path on all cores. When a keystroke only extends the query and the previous results were complete, archnav filters them instead of searching again. `archnav --benchmark` measures your own index
+- **Trigram-indexed search** - On a 1.46M-file index (i7-13700K, 24 threads), specific queries take under a millisecond, very common words like `config` (146,944 matches) about 6 ms, and a query with no three-character run (`ab`, or `*.rs` alone) about 20 ms, since it checks every path on all cores. The loaded index takes about 600 MB of memory. When a keystroke only extends the query and the previous results were complete, archnav filters them instead of searching again. `archnav --benchmark` measures your own index
 - **Query syntax** - words match in any order (`left all` finds "All That's Left of You"), `!trailer` leaves out paths containing a word, `size:>1G` and `dm:thisweek` filter by size and date, plus regex, glob, fuzzy, and path-aware search (see Search Syntax)
 - **Previews** - Text, rendered Markdown, images, PDF and audio/video metadata, archive contents
-- **Unified search** - Search all bookmarks simultaneously; the status bar shows how many paths matched when more than the result cap (500 by default) did
+- **Unified search** - Search all bookmarks simultaneously; every match is listed, and the list creates rows only as they scroll into view
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
 - **Results table** - File-type icons from the icon theme, click a header to sort, drag its edge to resize, right-click it to show or hide Path, Size, and Modified; widths and hidden columns are remembered. Click a path to open its folder
@@ -139,14 +139,14 @@ Config stored at `~/.config/archnav/config.json`:
     {"name": "projects", "path": "/home/user/projects", "is_network": false},
     {"name": "nas", "path": "/mnt/nas", "is_network": true}
   ],
-  "max_results": 500,
   "toggle_hotkey": "Alt+`",
   "exclude_paths": ["~/Downloads", "/mnt/scratch"],
   "columns": {"widths": {"path": 300, "size": 80, "date": 140}, "hidden": []}
 }
 ```
 
-- `max_results` caps how many results a search returns (hard cap 2000)
+- `max_results` (optional) caps how many results the window lists; absent or
+  0 lists every match
 - `columns` is written by the window when a column is resized or hidden. Name
   fills the width the others leave until a separator is dragged, then keeps
   its own width; Reset Columns in the header's right-click menu restores that
@@ -178,6 +178,9 @@ Single unified Rust application using cxx-qt for Qt/QML bindings:
 | Index | `~/.local/share/archnav/index.db` |
 | Toggle socket | `$XDG_RUNTIME_DIR/archnav.sock` |
 | IPC socket for scripts | `$XDG_RUNTIME_DIR/archnav-daemon.sock` (line commands: `SEARCH`, `SEARCH_ALL`, `ADD_BOOKMARK`, `RESCAN`, `STATS`, `PING`) |
+
+`SEARCH` and `SEARCH_ALL` return at most `limit` results from their JSON
+request: 500 when it is absent, every match when it is 0.
 
 ## License
 

@@ -1,8 +1,10 @@
 use rayon::prelude::*;
+use roaring::RoaringBitmap;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
 
@@ -52,8 +54,6 @@ impl AccessInfo {
     }
 }
 
-pub const MAX_RESULTS: usize = 2000;
-
 const BINARY_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "bmp", "ico", "webp", "svg", "tiff", "raw", "mp3", "mp4", "wav",
     "avi", "mkv", "mov", "flac", "ogg", "m4a", "aac", "pdf", "doc", "docx", "xls", "xlsx", "ppt",
@@ -83,7 +83,8 @@ pub const EXCLUDE_PATTERNS: &[&str] = &[
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileEntry {
     pub id: u32,
-    pub path: String,
+    /// Shared with `path_to_id` and the results, so each path is stored once
+    pub path: Arc<str>,
     pub is_dir: bool,
     pub mtime: i64,
     pub size: u64,
@@ -109,19 +110,10 @@ pub struct Bookmark {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
-    pub path: String,
+    pub path: Arc<str>,
     pub is_dir: bool,
     pub mtime: i64,
     pub size: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SearchAllResult {
-    pub path: String,
-    pub is_dir: bool,
-    pub mtime: i64,
-    pub size: u64,
-    pub bookmark: String,
 }
 
 /// Files a query could match: every indexed file, or the ids its trigrams allow.
@@ -131,16 +123,16 @@ enum Candidates {
 }
 
 pub struct TrigramIndex {
-    pub trigrams: HashMap<[u8; 3], HashSet<u32>>,
+    /// Posting lists: the ids of every file a trigram occurs in. Roaring
+    /// bitmaps hold the ~100M entries of a 1.4M-file index in a fraction of
+    /// the memory a HashSet<u32> needs, and intersect quickly.
+    pub trigrams: HashMap<[u8; 3], RoaringBitmap>,
     pub files: HashMap<u32, FileEntry>,
-    pub path_to_id: HashMap<String, u32>,
+    pub path_to_id: HashMap<Arc<str>, u32>,
     pub next_id: u32,
     pub bookmarks: Vec<Bookmark>,
     /// Access data for frecency scoring (file_id -> AccessInfo)
     pub access_data: HashMap<u32, AccessInfo>,
-    /// Result cap applied after sorting. Set from config max_results at
-    /// startup; hard-capped at MAX_RESULTS.
-    pub max_results: usize,
 }
 
 impl Default for TrigramIndex {
@@ -158,7 +150,6 @@ impl TrigramIndex {
             next_id: 1,
             bookmarks: Vec::new(),
             access_data: HashMap::new(),
-            max_results: MAX_RESULTS,
         }
     }
 
@@ -218,8 +209,15 @@ impl TrigramIndex {
 
     /// Index `path`, or refresh its metadata if already indexed, and report
     /// which of the two happened so the caller persists only what changed.
-    pub fn upsert(&mut self, path: String, is_dir: bool, mtime: i64, size: u64) -> Upsert {
-        if let Some(&existing_id) = self.path_to_id.get(&path) {
+    pub fn upsert(
+        &mut self,
+        path: impl Into<Arc<str>>,
+        is_dir: bool,
+        mtime: i64,
+        size: u64,
+    ) -> Upsert {
+        let path: Arc<str> = path.into();
+        if let Some(&existing_id) = self.path_to_id.get(&*path) {
             if let Some(entry) = self.files.get_mut(&existing_id) {
                 if entry.is_dir == is_dir && entry.mtime == mtime && entry.size == size {
                     return Upsert::Unchanged(existing_id);
@@ -272,21 +270,9 @@ impl TrigramIndex {
     pub fn remove(&mut self, path: &str) {
         if let Some(id) = self.path_to_id.remove(path) {
             if let Some(entry) = self.files.remove(&id) {
-                let filename = Path::new(&entry.path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&entry.path);
-
-                for trigram in Self::extract_trigrams(filename) {
+                for trigram in Self::compute_trigrams(&entry.path) {
                     if let Some(set) = self.trigrams.get_mut(&trigram) {
-                        set.remove(&id);
-                    }
-                }
-                for component in entry.path.split('/').filter(|s| !s.is_empty()) {
-                    for trigram in Self::extract_trigrams(component) {
-                        if let Some(set) = self.trigrams.get_mut(&trigram) {
-                            set.remove(&id);
-                        }
+                        set.remove(id);
                     }
                 }
             }
@@ -341,11 +327,10 @@ impl TrigramIndex {
 
                 // For longer queries with low edit distance, use partial trigram matching
                 // Require at least 1 matching trigram (very lenient)
-                let mut candidates: HashSet<u32> = HashSet::new();
-
+                let mut candidates = RoaringBitmap::new();
                 for trigram in &trigrams {
                     if let Some(ids) = self.trigrams.get(trigram) {
-                        candidates.extend(ids.iter().copied());
+                        candidates |= ids;
                     }
                 }
 
@@ -353,35 +338,36 @@ impl TrigramIndex {
                     // Fallback to scanning all if no trigram matches
                     Candidates::All
                 } else {
-                    Candidates::Ids(candidates.into_iter().collect())
+                    Candidates::Ids(candidates.iter().collect())
                 }
             }
         }
     }
 
-    /// Intersect posting lists for given trigrams. Walks the shortest list and
-    /// keeps the ids every other list contains, so a common trigram costs a
-    /// lookup per candidate rather than a copy of its whole list.
+    /// Intersect posting lists for given trigrams, starting from the shortest
+    /// so every step works on the smallest set so far.
     fn intersect_trigrams(&self, trigrams: &[[u8; 3]]) -> Candidates {
         if trigrams.is_empty() {
             return Candidates::All;
         }
-        let mut lists: Vec<&HashSet<u32>> = Vec::with_capacity(trigrams.len());
+        let mut lists: Vec<&RoaringBitmap> = Vec::with_capacity(trigrams.len());
         for trigram in trigrams {
             match self.trigrams.get(trigram) {
                 Some(list) => lists.push(list),
                 None => return Candidates::Ids(Vec::new()),
             }
         }
-        lists.sort_by_key(|list| list.len());
+        // len() walks every container, so count each list once
+        lists.sort_by_cached_key(|list| list.len());
         let (shortest, rest) = lists.split_first().unwrap();
-        Candidates::Ids(
-            shortest
-                .iter()
-                .copied()
-                .filter(|id| rest.iter().all(|list| list.contains(id)))
-                .collect(),
-        )
+        let mut ids = (*shortest).clone();
+        for list in rest {
+            if ids.is_empty() {
+                break;
+            }
+            ids &= *list;
+        }
+        Candidates::Ids(ids.iter().collect())
     }
 
     /// Check if a path matches the query: its mode, then its `!words`
@@ -465,17 +451,78 @@ impl TrigramIndex {
         }
     }
 
-    /// Search for files matching the query within a single bookmark
-    pub fn search(&self, query: &ParsedQuery, bookmark_path: &str) -> Vec<SearchResult> {
+    /// Search for files matching the query within a single bookmark, keeping
+    /// the first `limit` in sort order (0 keeps every match)
+    pub fn search(
+        &self,
+        query: &ParsedQuery,
+        bookmark_path: &str,
+        limit: usize,
+    ) -> Vec<SearchResult> {
         // Must be under the bookmark path, with a path-boundary check so
         // "/mnt/data" cannot leak in "/mnt/database" entries. An empty
         // bookmark path means no restriction.
-        let mut matches = self.matching_entries(query, |entry| {
+        let matches = self.matching_entries(query, |entry| {
             bookmark_path.is_empty() || path_under_root(&entry.path, bookmark_path)
         });
-        self.keep_top(&mut matches, query.sort_order);
+        self.ranked(matches, query.sort_order, limit)
+    }
+
+    /// Every match under any bookmark, in sort order
+    pub fn search_all(&self, query: &ParsedQuery, bookmark_paths: &[String]) -> Vec<SearchResult> {
+        self.search_all_counted(query, bookmark_paths, 0).0
+    }
+
+    /// The first `limit` matches under any bookmark (0 keeps every match),
+    /// plus how many paths matched in all. `bookmark_paths` narrows the
+    /// search to those bookmarks; empty means all of them.
+    pub fn search_all_counted(
+        &self,
+        query: &ParsedQuery,
+        bookmark_paths: &[String],
+        limit: usize,
+    ) -> (Vec<SearchResult>, usize) {
+        let matches = self.matching_entries(query, |entry| {
+            self.bookmark_name_of(&entry.path, bookmark_paths).is_some()
+        });
+        let total = matches.len();
+        (self.ranked(matches, query.sort_order, limit), total)
+    }
+
+    /// Name of the bookmark `path` belongs to: the first of `bookmark_paths`
+    /// (all bookmarks when empty) it sits under, boundary-aware so
+    /// "/mnt/database" is not attributed to bookmark "/mnt/data".
+    pub fn bookmark_name_of(&self, path: &str, bookmark_paths: &[String]) -> Option<&str> {
+        let name_at = |root: &str| {
+            self.bookmarks
+                .iter()
+                .find(|b| b.path == root)
+                .map(|b| b.name.as_str())
+        };
+        if bookmark_paths.is_empty() {
+            self.bookmarks
+                .iter()
+                .find(|b| path_under_root(path, &b.path))
+                .map(|b| b.name.as_str())
+        } else {
+            bookmark_paths
+                .iter()
+                .find(|root| path_under_root(path, root))
+                .and_then(|root| name_at(root))
+        }
+    }
+
+    /// The first `limit` of `matches` in sort order, as results. They are
+    /// built in parallel, since an uncapped query can return every path.
+    fn ranked(
+        &self,
+        mut matches: Vec<&FileEntry>,
+        order: SortOrder,
+        limit: usize,
+    ) -> Vec<SearchResult> {
+        self.keep_top(&mut matches, order, limit);
         matches
-            .into_iter()
+            .par_iter()
             .map(|entry| SearchResult {
                 path: entry.path.clone(),
                 is_dir: entry.is_dir,
@@ -483,58 +530,6 @@ impl TrigramIndex {
                 size: entry.size,
             })
             .collect()
-    }
-
-    /// Search all bookmarks at once (faster than multiple searches)
-    pub fn search_all(
-        &self,
-        query: &ParsedQuery,
-        bookmark_paths: &[String],
-    ) -> Vec<SearchAllResult> {
-        self.search_all_counted(query, bookmark_paths).0
-    }
-
-    /// `search_all`, plus how many paths matched before the result cap.
-    pub fn search_all_counted(
-        &self,
-        query: &ParsedQuery,
-        bookmark_paths: &[String],
-    ) -> (Vec<SearchAllResult>, usize) {
-        let bookmark_map: HashMap<&str, &str> = self
-            .bookmarks
-            .iter()
-            .map(|b| (b.path.as_str(), b.name.as_str()))
-            .collect();
-
-        let search_paths: Vec<&str> = if bookmark_paths.is_empty() {
-            self.bookmarks.iter().map(|b| b.path.as_str()).collect()
-        } else {
-            bookmark_paths.iter().map(|s| s.as_str()).collect()
-        };
-
-        // Find which bookmark a file belongs to (boundary-aware, so
-        // "/mnt/database" is not attributed to bookmark "/mnt/data")
-        let bookmark_of = |path: &str| {
-            search_paths
-                .iter()
-                .find(|&&bp| path_under_root(path, bp))
-                .and_then(|bp| bookmark_map.get(bp).copied())
-        };
-
-        let mut matches = self.matching_entries(query, |entry| bookmark_of(&entry.path).is_some());
-        let total = matches.len();
-        self.keep_top(&mut matches, query.sort_order);
-        let results = matches
-            .into_iter()
-            .map(|entry| SearchAllResult {
-                path: entry.path.clone(),
-                is_dir: entry.is_dir,
-                mtime: entry.mtime,
-                size: entry.size,
-                bookmark: bookmark_of(&entry.path).unwrap_or_default().to_string(),
-            })
-            .collect();
-        (results, total)
     }
 
     /// Every indexed entry the query matches and `keep` accepts. The checks
@@ -581,7 +576,7 @@ impl TrigramIndex {
                 if entry.is_dir {
                     return false;
                 }
-                if let Some(ext) = Path::new(&entry.path).extension().and_then(|e| e.to_str()) {
+                if let Some(ext) = Path::new(&*entry.path).extension().and_then(|e| e.to_str()) {
                     if BINARY_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
                         return false;
                     }
@@ -590,7 +585,7 @@ impl TrigramIndex {
         }
 
         if let Some(ref ext_filter) = query.extension_filter {
-            match Path::new(&entry.path).extension().and_then(|e| e.to_str()) {
+            match Path::new(&*entry.path).extension().and_then(|e| e.to_str()) {
                 Some(ext) if ext.eq_ignore_ascii_case(ext_filter) => {}
                 _ => return false,
             }
@@ -600,11 +595,11 @@ impl TrigramIndex {
             && self.matches_query(&entry.path, query)
     }
 
-    /// Sort `entries` by `order` and keep the first `max_results`. A linear
-    /// selection picks those first, so a query matching a million paths does
-    /// not pay for sorting all of them. Ties fall back to the path, which keeps
-    /// the order the same from one search to the next.
-    fn keep_top(&self, entries: &mut Vec<&FileEntry>, order: SortOrder) {
+    /// Sort `entries` by `order` and keep the first `limit` (all of them when
+    /// it is 0). A linear selection picks those first, so a query matching a
+    /// million paths does not pay for sorting all of them. Ties fall back to
+    /// the path, which keeps the order the same from one search to the next.
+    fn keep_top(&self, entries: &mut Vec<&FileEntry>, order: SortOrder, limit: usize) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -615,12 +610,18 @@ impl TrigramIndex {
                 .map(|a| a.frecency_score_at(now))
                 .unwrap_or(0.0)
         };
-        let cmp = |a: &&FileEntry, b: &&FileEntry| compare_entries(a, b, order, &score);
-        if self.max_results > 0 && entries.len() > self.max_results {
-            entries.select_nth_unstable_by(self.max_results - 1, cmp);
-            entries.truncate(self.max_results);
+        match order {
+            SortOrder::MtimeDesc => sort_keyed(entries, limit, |e| e.mtime, |a, b| b.cmp(a)),
+            SortOrder::MtimeAsc => sort_keyed(entries, limit, |e| e.mtime, Ord::cmp),
+            SortOrder::NameAsc => sort_keyed(entries, limit, |e| file_name(&e.path), Ord::cmp),
+            SortOrder::NameDesc => {
+                sort_keyed(entries, limit, |e| file_name(&e.path), |a, b| b.cmp(a))
+            }
+            SortOrder::SizeDesc => sort_keyed(entries, limit, |e| e.size, |a, b| b.cmp(a)),
+            SortOrder::SizeAsc => sort_keyed(entries, limit, |e| e.size, Ord::cmp),
+            SortOrder::PathAsc => sort_keyed(entries, limit, |_| (), Ord::cmp),
+            SortOrder::Frecency => sort_keyed(entries, limit, score, |a, b| b.total_cmp(a)),
         }
-        entries.par_sort_unstable_by(cmp);
     }
 
     pub fn file_count(&self) -> usize {
@@ -632,25 +633,31 @@ impl TrigramIndex {
     }
 }
 
-/// Order two entries by `order`, then by path.
-fn compare_entries(
-    a: &FileEntry,
-    b: &FileEntry,
-    order: SortOrder,
-    score: &impl Fn(&FileEntry) -> f64,
-) -> Ordering {
-    let name = |e: &FileEntry| Path::new(&e.path).file_name().map(|n| n.to_os_string());
-    let primary = match order {
-        SortOrder::MtimeDesc => b.mtime.cmp(&a.mtime),
-        SortOrder::MtimeAsc => a.mtime.cmp(&b.mtime),
-        SortOrder::NameAsc => name(a).cmp(&name(b)),
-        SortOrder::NameDesc => name(b).cmp(&name(a)),
-        SortOrder::SizeDesc => b.size.cmp(&a.size),
-        SortOrder::SizeAsc => a.size.cmp(&b.size),
-        SortOrder::PathAsc => Ordering::Equal,
-        SortOrder::Frecency => score(b).partial_cmp(&score(a)).unwrap_or(Ordering::Equal),
+/// Order `entries` by `cmp` on a key computed once per entry (a file name or
+/// a frecency score is too slow to work out again in every comparison), then
+/// by path, keeping the first `limit` (all when 0).
+fn sort_keyed<'a, K: Send>(
+    entries: &mut Vec<&'a FileEntry>,
+    limit: usize,
+    key: impl Fn(&'a FileEntry) -> K + Sync,
+    cmp: impl Fn(&K, &K) -> Ordering + Sync,
+) {
+    let mut keyed: Vec<(K, &'a FileEntry)> = entries.par_iter().map(|&e| (key(e), e)).collect();
+    let by_key_then_path = |a: &(K, &FileEntry), b: &(K, &FileEntry)| {
+        cmp(&a.0, &b.0).then_with(|| a.1.path.cmp(&b.1.path))
     };
-    primary.then_with(|| a.path.cmp(&b.path))
+    if limit > 0 && keyed.len() > limit {
+        keyed.select_nth_unstable_by(limit - 1, by_key_then_path);
+        keyed.truncate(limit);
+    }
+    keyed.par_sort_unstable_by(by_key_then_path);
+    entries.clear();
+    entries.extend(keyed.into_iter().map(|(_, e)| e));
+}
+
+/// The last component of `path`, compared by the name sorts.
+fn file_name(path: &str) -> Option<&std::ffi::OsStr> {
+    Path::new(path).file_name()
 }
 
 /// Extract literal substrings from a regex pattern for trigram narrowing.
@@ -741,9 +748,9 @@ mod tests {
             ..ParsedQuery::parse("", SortOrder::MtimeDesc)
         };
 
-        let results = index.search(&query, "/tmp/test");
+        let results = index.search(&query, "/tmp/test", 0);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].path, "/tmp/test/readme.md");
+        assert_eq!(&*results[0].path, "/tmp/test/readme.md");
     }
 
     #[test]
@@ -754,6 +761,8 @@ mod tests {
 
         index.remove("/tmp/test/file.txt");
         assert_eq!(index.file_count(), 0);
+        // Every posting list lets go of the id, folder trigrams included
+        assert!(index.trigrams.values().all(|ids| ids.is_empty()));
     }
 
     #[test]
@@ -778,16 +787,16 @@ mod tests {
             path_segments: None,
             ..ParsedQuery::parse("", SortOrder::MtimeDesc)
         };
-        let results = index.search(&query, "/tmp");
-        assert_eq!(results[0].path, "/tmp/aaa.txt");
-        assert_eq!(results[2].path, "/tmp/zzz.txt");
+        let results = index.search(&query, "/tmp", 0);
+        assert_eq!(&*results[0].path, "/tmp/aaa.txt");
+        assert_eq!(&*results[2].path, "/tmp/zzz.txt");
 
         // Sort by size desc
         let query = ParsedQuery {
             sort_order: SortOrder::SizeDesc,
             ..query
         };
-        let results = index.search(&query, "/tmp");
+        let results = index.search(&query, "/tmp", 0);
         assert_eq!(results[0].size, 300);
     }
 
@@ -803,9 +812,9 @@ mod tests {
         index.add("/mnt/database/other.txt".to_string(), false, 100, 1);
 
         let query = ParsedQuery::parse("*.txt", SortOrder::MtimeDesc);
-        let results = index.search(&query, "/mnt/data");
+        let results = index.search(&query, "/mnt/data", 0);
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].path, "/mnt/data/file.txt");
+        assert_eq!(&*results[0].path, "/mnt/data/file.txt");
 
         let all = index.search_all(&query, &[]);
         assert_eq!(
@@ -813,7 +822,7 @@ mod tests {
             1,
             "sibling-prefix paths must not be attributed to a bookmark"
         );
-        assert_eq!(all[0].bookmark, "data");
+        assert_eq!(index.bookmark_name_of(&all[0].path, &[]), Some("data"));
     }
 
     #[test]
@@ -824,13 +833,13 @@ mod tests {
             path: "/t".to_string(),
             is_network: false,
         });
-        index.max_results = 3;
         for i in 0..10 {
             index.add(format!("/t/file{}.txt", i), false, i, 0);
         }
         let query = ParsedQuery::parse("*.txt", SortOrder::MtimeDesc);
-        assert_eq!(index.search(&query, "/t").len(), 3);
-        assert_eq!(index.search_all(&query, &[]).len(), 3);
+        assert_eq!(index.search(&query, "/t", 3).len(), 3);
+        assert_eq!(index.search_all_counted(&query, &[], 3).0.len(), 3);
+        assert_eq!(index.search_all(&query, &[]).len(), 10);
     }
 
     #[test]
@@ -912,7 +921,7 @@ mod tests {
             let all = names(index.search_all(&q, &[]).iter().map(|r| r.path.clone()));
             assert_eq!(all, want, "search_all {:?}", order);
             // The single-bookmark search (used over IPC) sorts the same way
-            let one = names(index.search(&q, "/t").iter().map(|r| r.path.clone()));
+            let one = names(index.search(&q, "/t", 0).iter().map(|r| r.path.clone()));
             assert_eq!(one, want, "search {:?}", order);
         }
     }
@@ -973,7 +982,7 @@ mod tests {
         index
             .search_all(&q, &[])
             .into_iter()
-            .map(|r| r.path)
+            .map(|r| r.path.to_string())
             .collect()
     }
 
@@ -1022,13 +1031,12 @@ mod tests {
         let full: Vec<String> = index
             .search_all(&q, &[])
             .into_iter()
-            .map(|r| r.path)
+            .map(|r| r.path.to_string())
             .collect();
 
-        index.max_results = 10;
-        let (top, total) = index.search_all_counted(&q, &[]);
+        let (top, total) = index.search_all_counted(&q, &[], 10);
         assert_eq!(total, 200);
-        let top: Vec<String> = top.into_iter().map(|r| r.path).collect();
+        let top: Vec<String> = top.into_iter().map(|r| r.path.to_string()).collect();
         assert_eq!(top, full[..10].to_vec());
     }
 

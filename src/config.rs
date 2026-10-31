@@ -18,8 +18,8 @@ pub struct BookmarkConfig {
 pub struct AppConfig {
     #[serde(default)]
     pub bookmarks: Vec<BookmarkConfig>,
-    /// Per-search result cap. Hard-capped at the engine's MAX_RESULTS (2000).
-    #[serde(default = "default_max_results")]
+    /// Per-search result cap for the window; 0 (the default) shows every match.
+    #[serde(default)]
     pub max_results: i32,
     #[serde(default = "default_toggle_hotkey")]
     pub toggle_hotkey: String,
@@ -45,10 +45,6 @@ pub struct ColumnLayout {
     pub hidden: Vec<String>,
 }
 
-fn default_max_results() -> i32 {
-    500
-}
-
 fn default_toggle_hotkey() -> String {
     "Alt+`".to_string()
 }
@@ -65,7 +61,7 @@ impl Default for AppConfig {
                 path: home,
                 is_network: false,
             }],
-            max_results: default_max_results(),
+            max_results: 0,
             toggle_hotkey: default_toggle_hotkey(),
             exclude_paths: Vec::new(),
             columns: ColumnLayout::default(),
@@ -163,11 +159,10 @@ impl AppConfig {
         }
     }
 
-    /// The result cap to apply per search: max_results clamped to a sane
-    /// range, never above the engine's hard cap.
+    /// The result cap to apply per search, 0 for none. A negative value
+    /// means none too.
     pub fn effective_max_results(&self) -> usize {
-        self.max_results
-            .clamp(1, crate::search::trigram::MAX_RESULTS as i32) as usize
+        self.max_results.max(0) as usize
     }
 
     /// Convert bookmarks to the search engine format.
@@ -233,17 +228,16 @@ mod tests {
     }
 
     #[test]
-    fn max_results_is_clamped_to_the_engine_cap() {
+    fn max_results_defaults_to_no_cap() {
         let with = |max_results| AppConfig {
             max_results,
             ..AppConfig::default()
         };
-        assert_eq!(with(0).effective_max_results(), 1);
+        assert_eq!(AppConfig::default().effective_max_results(), 0);
+        let parsed: AppConfig = serde_json::from_str(r#"{"bookmarks": []}"#).unwrap();
+        assert_eq!(parsed.effective_max_results(), 0);
+        assert_eq!(with(-5).effective_max_results(), 0);
         assert_eq!(with(250).effective_max_results(), 250);
-        assert_eq!(
-            with(i32::MAX).effective_max_results(),
-            crate::search::trigram::MAX_RESULTS
-        );
     }
 
     #[test]

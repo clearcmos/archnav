@@ -6,10 +6,24 @@ pub mod qobject {
     unsafe extern "C++" {
         include!("cxx-qt-lib/qstring.h");
         type QString = cxx_qt_lib::QString;
+        include!("cxx-qt-lib/qmodelindex.h");
+        type QModelIndex = cxx_qt_lib::QModelIndex;
+        include!("cxx-qt-lib/qvariant.h");
+        type QVariant = cxx_qt_lib::QVariant;
+        include!("cxx-qt-lib/qhash.h");
+        type QHash_i32_QByteArray = cxx_qt_lib::QHash<cxx_qt_lib::QHashPair_i32_QByteArray>;
     }
 
+    extern "C++" {
+        include!(<QtCore/QAbstractListModel>);
+        type QAbstractListModel;
+    }
+
+    // The results are the model behind the QML list, so the view creates rows
+    // only for what is on screen however many paths matched
     unsafe extern "RustQt" {
         #[qobject]
+        #[base = QAbstractListModel]
         #[qml_element]
         #[qproperty(QString, status_text)]
         #[qproperty(bool, engine_ready)]
@@ -48,6 +62,10 @@ pub mod qobject {
         #[qinvokable]
         fn search(self: Pin<&mut SearchEngine>, query: QString, sort_index: i32);
 
+        // Empty the list, dropping any search still running
+        #[qinvokable]
+        fn clear_results(self: Pin<&mut SearchEngine>);
+
         // Bookmark management
         #[qinvokable]
         fn add_bookmark(
@@ -73,28 +91,12 @@ pub mod qobject {
         #[qinvokable]
         fn bookmark_path_at(self: &SearchEngine, index: i32) -> QString;
 
-        // Result accessors (QML reads these after results_ready signal)
+        // The selected row's path and type, for opening and previewing it
         #[qinvokable]
         fn result_path_at(self: &SearchEngine, row: i32) -> QString;
 
         #[qinvokable]
         fn result_is_dir_at(self: &SearchEngine, row: i32) -> bool;
-
-        #[qinvokable]
-        fn result_mtime_at(self: &SearchEngine, row: i32) -> i64;
-
-        #[qinvokable]
-        fn result_size_at(self: &SearchEngine, row: i32) -> i64;
-
-        #[qinvokable]
-        fn result_bookmark_at(self: &SearchEngine, row: i32) -> QString;
-
-        #[qinvokable]
-        fn result_filename_at(self: &SearchEngine, row: i32) -> QString;
-
-        // Theme icon name for the result's file type ("folder" for directories)
-        #[qinvokable]
-        fn result_icon_at(self: &SearchEngine, row: i32) -> QString;
 
         // Results column layout as JSON ({"widths": {...}, "hidden": [...]})
         #[qinvokable]
@@ -119,6 +121,28 @@ pub mod qobject {
         fn show_context_menu(self: &SearchEngine, path: QString, x: i32, y: i32);
     }
 
+    // QAbstractListModel
+    unsafe extern "RustQt" {
+        #[inherit]
+        #[cxx_name = "beginResetModel"]
+        unsafe fn begin_reset_model(self: Pin<&mut SearchEngine>);
+
+        #[inherit]
+        #[cxx_name = "endResetModel"]
+        unsafe fn end_reset_model(self: Pin<&mut SearchEngine>);
+
+        #[cxx_override]
+        fn data(self: &SearchEngine, index: &QModelIndex, role: i32) -> QVariant;
+
+        #[cxx_override]
+        #[cxx_name = "roleNames"]
+        fn role_names(self: &SearchEngine) -> QHash_i32_QByteArray;
+
+        #[cxx_override]
+        #[cxx_name = "rowCount"]
+        fn row_count(self: &SearchEngine, parent: &QModelIndex) -> i32;
+    }
+
     impl cxx_qt::Threading for SearchEngine {}
 }
 
@@ -126,11 +150,19 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use cxx_qt::{CxxQtType, Threading};
-use cxx_qt_lib::QString;
+use cxx_qt_lib::{QByteArray, QHash, QHashPair_i32_QByteArray, QModelIndex, QString, QVariant};
 use tracing::info;
 
-use crate::search::engine::CoreEngine;
-use crate::search::trigram::{Bookmark, SearchAllResult};
+use crate::search::engine::{CoreEngine, Results};
+use crate::search::trigram::Bookmark;
+
+// Model roles, from Qt::UserRole, named for QML in role_names
+const ROLE_PATH: i32 = 256;
+const ROLE_FILENAME: i32 = 257;
+const ROLE_IS_DIR: i32 = 258;
+const ROLE_ICON_NAME: i32 = 259;
+const ROLE_MTIME: i32 = 260;
+const ROLE_FILE_SIZE: i32 = 261;
 
 /// Rust backing struct for the SearchEngine QObject.
 pub struct SearchEngineRust {
@@ -144,7 +176,7 @@ pub struct SearchEngineRust {
 
     // Internal state (not exposed as Qt properties)
     inner: Option<Arc<CoreEngine>>,
-    results: Vec<SearchAllResult>,
+    results: Results,
     /// Sequence counter to discard stale search results
     search_seq: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
@@ -159,7 +191,7 @@ impl Default for SearchEngineRust {
             search_time_ms: 0,
             bookmark_count: 0,
             inner: None,
-            results: Vec::new(),
+            results: Results::default(),
             search_seq: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
@@ -283,7 +315,7 @@ impl qobject::SearchEngine {
                     "[BRIDGE] updating UI: query='{}', seq={}, results={}",
                     query_str_clone, my_seq, result_count
                 );
-                qobj.as_mut().rust_mut().results = results;
+                qobj.as_mut().set_results(results);
                 qobj.as_mut().set_result_count(result_count);
                 qobj.as_mut().set_search_time_ms(search_time);
                 qobj.as_mut().set_total_indexed(total_indexed);
@@ -291,6 +323,63 @@ impl qobject::SearchEngine {
                 qobj.as_mut().resultsReady();
             });
         });
+    }
+
+    fn clear_results(mut self: Pin<&mut Self>) {
+        // A search still running would otherwise land after the clear
+        self.rust()
+            .search_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.as_mut().set_results(Results::default());
+        self.as_mut().set_result_count(0);
+    }
+
+    /// Swap in a new result set, telling attached views to reload.
+    fn set_results(mut self: Pin<&mut Self>, results: Results) {
+        // SAFETY: called on the Qt thread, and the reset brackets the only
+        // change to what the model reports
+        unsafe { self.as_mut().begin_reset_model() };
+        let old = std::mem::replace(&mut self.as_mut().rust_mut().results, results);
+        unsafe { self.as_mut().end_reset_model() };
+        // Freeing a large result set here would stall the window
+        crate::search::engine::drop_in_background(old);
+    }
+
+    fn data(&self, index: &QModelIndex, role: i32) -> QVariant {
+        let Some(r) = self.rust().results.get(index.row() as usize) else {
+            return QVariant::default();
+        };
+        match role {
+            ROLE_PATH => QVariant::from(&QString::from(&*r.path)),
+            ROLE_FILENAME => QVariant::from(&QString::from(file_name(&r.path))),
+            ROLE_IS_DIR => QVariant::from(&r.is_dir),
+            // Looked up per row as it scrolls into view, by name only
+            ROLE_ICON_NAME => QVariant::from(&QString::from(&crate::mime_icon::icon_name_for(
+                &r.path, r.is_dir,
+            ))),
+            ROLE_MTIME => QVariant::from(&r.mtime),
+            ROLE_FILE_SIZE => QVariant::from(&(r.size as i64)),
+            _ => QVariant::default(),
+        }
+    }
+
+    fn role_names(&self) -> QHash<QHashPair_i32_QByteArray> {
+        let mut roles = QHash::<QHashPair_i32_QByteArray>::default();
+        for (role, name) in [
+            (ROLE_PATH, "path"),
+            (ROLE_FILENAME, "filename"),
+            (ROLE_IS_DIR, "isDir"),
+            (ROLE_ICON_NAME, "iconName"),
+            (ROLE_MTIME, "mtime"),
+            (ROLE_FILE_SIZE, "fileSize"),
+        ] {
+            roles.insert(role, QByteArray::from(name));
+        }
+        roles
+    }
+
+    fn row_count(&self, _parent: &QModelIndex) -> i32 {
+        self.rust().results.len().try_into().unwrap_or(i32::MAX)
     }
 
     /// Add a bookmark and scan it in a background thread; scanning a large
@@ -419,50 +508,6 @@ impl qobject::SearchEngine {
             .unwrap_or(false)
     }
 
-    fn result_mtime_at(&self, row: i32) -> i64 {
-        self.rust()
-            .results
-            .get(row as usize)
-            .map(|r| r.mtime)
-            .unwrap_or(0)
-    }
-
-    fn result_size_at(&self, row: i32) -> i64 {
-        self.rust()
-            .results
-            .get(row as usize)
-            .map(|r| r.size as i64)
-            .unwrap_or(0)
-    }
-
-    fn result_bookmark_at(&self, row: i32) -> QString {
-        self.rust()
-            .results
-            .get(row as usize)
-            .map(|r| QString::from(&*r.bookmark))
-            .unwrap_or_default()
-    }
-
-    fn result_filename_at(&self, row: i32) -> QString {
-        self.rust()
-            .results
-            .get(row as usize)
-            .map(|r| {
-                let path = std::path::Path::new(&r.path);
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(&r.path);
-                QString::from(name)
-            })
-            .unwrap_or_default()
-    }
-
-    fn result_icon_at(&self, row: i32) -> QString {
-        self.rust()
-            .results
-            .get(row as usize)
-            .map(|r| QString::from(&crate::mime_icon::icon_name_for(&r.path, r.is_dir)))
-            .unwrap_or_default()
-    }
-
     fn column_layout(&self) -> QString {
         let columns = crate::config::AppConfig::load().columns;
         QString::from(&serde_json::to_string(&columns).unwrap_or_default())
@@ -514,4 +559,12 @@ impl qobject::SearchEngine {
         let menu = crate::context_menu::ContextMenu::new();
         menu.show(&path_str, x, y);
     }
+}
+
+/// The last component of `path`, or all of it when it has none.
+fn file_name(path: &str) -> &str {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
 }

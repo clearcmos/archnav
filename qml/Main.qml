@@ -72,28 +72,10 @@ ApplicationWindow {
         searchEngine: engine
     }
 
-
-    // Results data
-    ListModel {
-        id: resultsModel
-    }
-
+    // The engine is the results model; it has reloaded when this runs
     function updateResults() {
         searching = false
-        resultsModel.clear()
-        for (var i = 0; i < engine.result_count; i++) {
-            var p = engine.result_path_at(i)
-            var d = engine.result_is_dir_at(i)
-            resultsModel.append({
-                path: p,
-                isDir: d,
-                filename: engine.result_filename_at(i),
-                iconName: engine.result_icon_at(i),
-                mtime: engine.result_mtime_at(i),
-                fileSize: engine.result_size_at(i)
-            })
-        }
-        resultsList.currentIndex = resultsModel.count > 0 ? 0 : -1
+        resultsList.currentIndex = engine.result_count > 0 ? 0 : -1
         // currentIndex may not change value across searches (0 -> 0), so the
         // onCurrentIndexChanged hook alone would leave a stale preview.
         updatePreview()
@@ -101,16 +83,12 @@ ApplicationWindow {
 
     function openSelected() {
         if (resultsList.currentIndex < 0) return
-        var item = resultsModel.get(resultsList.currentIndex)
-        if (!item) return
-        engine.open_file(item.path)
+        engine.open_file(engine.result_path_at(resultsList.currentIndex))
     }
 
     function openContainingFolder() {
         if (resultsList.currentIndex < 0) return
-        var item = resultsModel.get(resultsList.currentIndex)
-        if (!item) return
-        engine.open_folder(item.path)
+        engine.open_folder(engine.result_path_at(resultsList.currentIndex))
     }
 
     function updatePreview() {
@@ -119,10 +97,9 @@ ApplicationWindow {
             preview.clear_preview()
             return
         }
-        var item = resultsModel.get(resultsList.currentIndex)
-        if (item) {
-            preview.request_preview(item.path, item.isDir, previewPanel.contentWidth)
-        }
+        var i = resultsList.currentIndex
+        preview.request_preview(engine.result_path_at(i), engine.result_is_dir_at(i),
+                                previewPanel.contentWidth)
     }
 
     function setSortOrder(sortIndex) {
@@ -229,7 +206,7 @@ ApplicationWindow {
                 engine.search(searchBar.text, currentSortIndex)
             } else {
                 searching = false
-                resultsModel.clear()
+                engine.clear_results()
                 resultsList.currentIndex = -1
                 preview.clear_preview()
             }
@@ -285,7 +262,7 @@ ApplicationWindow {
                 id: resultsList
                 SplitView.preferredWidth: previewVisible ? parent.width * 0.55 : parent.width
                 SplitView.minimumWidth: Kirigami.Units.gridUnit * 22
-                model: resultsModel
+                model: engine
                 nameSortState: root.nameSortState
                 pathSortState: root.pathSortState
                 sizeSortState: root.sizeSortState

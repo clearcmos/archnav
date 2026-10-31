@@ -1,4 +1,5 @@
 use notify::RecommendedWatcher;
+use rayon::prelude::*;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, RwLock};
@@ -10,19 +11,29 @@ use super::database::{start_db_thread, Database, DbOp};
 use super::integrity::{start_integrity_checker, start_network_scanner};
 use super::query::{ParsedQuery, SortOrder};
 use super::scanner::{is_network_mount, path_under_root, reconcile_directory, scan_directory};
-use super::trigram::{Bookmark, SearchAllResult, TrigramIndex, MAX_RESULTS};
+use super::trigram::{Bookmark, SearchResult, TrigramIndex};
 use super::watcher::start_watcher;
+
+/// Search results, shared between the cache and whoever displays them.
+pub type Results = Arc<Vec<SearchResult>>;
+
+/// Free `value` on a pool thread. Dropping the last handle on a million
+/// results releases a million shared paths, which takes longer than the
+/// search that replaced them.
+pub fn drop_in_background<T: Send + 'static>(value: T) {
+    rayon::spawn(move || drop(value));
+}
 
 /// Cache for incremental search refinement.
 /// When user types "con" -> "conf" -> "config", we reuse previous results.
 struct SearchCache {
     query: String,
     sort_order: SortOrder,
-    results: Vec<SearchAllResult>,
+    results: Results,
     timestamp: Instant,
     /// Sequence number to prevent stale overwrites from slow searches
     seq: u64,
-    /// Whether results were truncated (at MAX_RESULTS) - if so, can't safely filter
+    /// Whether results were truncated at max_results - if so, can't safely filter
     was_truncated: bool,
 }
 
@@ -69,7 +80,7 @@ pub fn group_digits(n: usize) -> String {
 }
 
 /// The status bar text after a search. Says how many paths matched in all
-/// when the result cap cut the list short.
+/// when a result cap cut the list short.
 pub fn results_status(shown: usize, total: usize, millis: u128) -> String {
     if total > shown {
         format!(
@@ -93,13 +104,15 @@ pub struct CoreEngine {
     search_cache: RwLock<Option<SearchCache>>,
     /// Sequence counter to prevent stale cache updates from slow searches
     search_seq: std::sync::atomic::AtomicU64,
+    /// Per-search result cap from config; 0 returns every match
+    max_results: usize,
 }
 
 impl CoreEngine {
     /// Create a new engine, load from database, start background threads.
     /// `exclude_paths` are recursive blacklist locations from config (already
     /// normalized via `AppConfig::expanded_exclude_paths`). `max_results` is
-    /// the per-search result cap from config, hard-capped at MAX_RESULTS.
+    /// the per-search result cap from config; 0 returns every match.
     pub fn new(bookmarks: Vec<Bookmark>, exclude_paths: Vec<String>, max_results: usize) -> Self {
         // Install the user's recursive exclude paths before anything scans, so
         // the initial scan, reconcile, network rescans, and the watcher all
@@ -112,7 +125,6 @@ impl CoreEngine {
         // Load existing index from database
         {
             let mut idx = index.write().unwrap();
-            idx.max_results = max_results.clamp(1, MAX_RESULTS);
             match db.load_into_index(&mut idx) {
                 Ok(count) => info!("Loaded {} files from database", count),
                 Err(e) => warn!("Failed to load index from database: {}", e),
@@ -167,7 +179,7 @@ impl CoreEngine {
                 idx.files
                     .values()
                     .filter(|f| super::scanner::is_user_excluded(&f.path))
-                    .map(|f| f.path.clone())
+                    .map(|f| f.path.to_string())
                     .collect()
             };
             if !to_purge.is_empty() {
@@ -258,18 +270,14 @@ impl CoreEngine {
             _watcher: watcher_holder,
             search_cache: RwLock::new(None),
             search_seq: std::sync::atomic::AtomicU64::new(0),
+            max_results,
         }
     }
 
-    /// Search across all locations. Returns results and elapsed time.
-    /// Uses incremental caching: if query refines previous query, filters cached results.
-    /// Run a search: the results (capped at max_results), how many paths
-    /// matched in total, and how long it took.
-    pub fn search(
-        &self,
-        raw_query: &str,
-        sort_index: i32,
-    ) -> (Vec<SearchAllResult>, usize, std::time::Duration) {
+    /// Run a search across all bookmarks: the results (capped at
+    /// max_results), how many paths matched in total, and how long it took.
+    /// When the query refines the previous one, filters its cached results.
+    pub fn search(&self, raw_query: &str, sort_index: i32) -> (Results, usize, Duration) {
         use std::sync::atomic::Ordering;
 
         let start = Instant::now();
@@ -285,7 +293,7 @@ impl CoreEngine {
 
         // Check if we can use cached results
         // Extract cache data while holding read lock, then release before write
-        let cache_hit_data: Option<(String, Vec<SearchAllResult>)> = {
+        let cache_hit_data: Option<(String, Results)> = {
             let cache_guard = self.search_cache.read().unwrap();
             if let Some(ref cache) = *cache_guard {
                 if cache.is_valid_for(raw_query, sort_order) {
@@ -302,8 +310,8 @@ impl CoreEngine {
             // Filter cached results instead of full search
             let query = ParsedQuery::parse(raw_query, sort_order);
             let dirs_only = query.dirs_only();
-            let results: Vec<SearchAllResult> = cached_results
-                .iter()
+            let results: Vec<SearchResult> = cached_results
+                .par_iter()
                 .filter(|r| {
                     if dirs_only && !r.is_dir {
                         return false;
@@ -325,6 +333,7 @@ impl CoreEngine {
             // The cache held every match of a broader query, so the filtered
             // set is every match of this one: complete, never truncated.
             let total = results.len();
+            let results = Arc::new(results);
             {
                 let mut cache_guard = self.search_cache.write().unwrap();
                 let should_update = match cache_guard.as_ref() {
@@ -332,14 +341,14 @@ impl CoreEngine {
                     Some(existing) => my_seq > existing.seq,
                 };
                 if should_update {
-                    *cache_guard = Some(SearchCache {
+                    drop_in_background(cache_guard.replace(SearchCache {
                         query: raw_query.to_string(),
                         sort_order,
-                        results: results.clone(),
+                        results: Arc::clone(&results),
                         timestamp: Instant::now(),
                         seq: my_seq,
                         was_truncated: false,
-                    });
+                    }));
                 } else {
                     debug!(
                         "[ENGINE] Cache HIT but not updating (seq {} <= existing)",
@@ -348,6 +357,7 @@ impl CoreEngine {
                 }
             }
 
+            drop_in_background(cached_results);
             return (results, total, start.elapsed());
         }
 
@@ -358,7 +368,9 @@ impl CoreEngine {
             "[ENGINE] Cache MISS: '{}', seq={}, doing full search",
             raw_query, my_seq
         );
-        let (results, total) = idx.search_all_counted(&query, &[]);
+        let (results, total) = idx.search_all_counted(&query, &[], self.max_results);
+        drop(idx);
+        let results = Arc::new(results);
         debug!(
             "[ENGINE] Full search complete: '{}', seq={}, results={}",
             raw_query,
@@ -377,14 +389,14 @@ impl CoreEngine {
 
             if should_update {
                 let was_truncated = total > results.len();
-                *cache_guard = Some(SearchCache {
+                drop_in_background(cache_guard.replace(SearchCache {
                     query: raw_query.to_string(),
                     sort_order,
-                    results: results.clone(),
+                    results: Arc::clone(&results),
                     timestamp: Instant::now(),
                     seq: my_seq,
                     was_truncated,
-                });
+                }));
             } else {
                 debug!(
                     "Discarding stale search results for '{}' (seq {} < cached)",
@@ -462,7 +474,7 @@ impl CoreEngine {
                 idx.files
                     .values()
                     .filter(|f| path_under_root(&f.path, &path))
-                    .map(|f| f.path.clone())
+                    .map(|f| f.path.to_string())
                     .collect()
             };
             let mut idx = self.index.write().unwrap();
@@ -573,7 +585,7 @@ mod cache_tests {
         SearchCache {
             query: query.to_string(),
             sort_order: SortOrder::MtimeDesc,
-            results: Vec::new(),
+            results: Arc::default(),
             timestamp: Instant::now(),
             seq: 0,
             was_truncated: false,

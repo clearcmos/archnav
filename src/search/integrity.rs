@@ -50,7 +50,7 @@ pub fn start_integrity_checker(index: Arc<RwLock<TrigramIndex>>, db_tx: Sender<D
                     .values()
                     .skip(offset)
                     .take(INTEGRITY_BATCH_SIZE)
-                    .map(|f| f.path.clone())
+                    .map(|f| f.path.to_string())
                     .collect();
                 offset += batch.len();
                 (batch, unavailable)
