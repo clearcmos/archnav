@@ -123,6 +123,27 @@ ColumnLayout {
         layoutEdited()
     }
 
+    // Size `key` to fit its title and the rows on screen, as a double click
+    // on a separator does in Dolphin. Rows off screen are not measured: a
+    // result set can hold a million paths.
+    function fitColumn(key) {
+        var cells = { name: nameHeader, path: pathHeader, size: sizeHeader, date: dateHeader }
+        var px = cells[key].implicitWidth
+        var first = Math.max(0, listView.indexAt(0, listView.contentY))
+        var last = listView.indexAt(0, listView.contentY + listView.height - 1)
+        if (last < 0)
+            last = listView.count - 1
+        for (var i = first; i <= last; i++) {
+            var row = listView.itemAtIndex(i)
+            if (row)
+                px = Math.max(px, row.fitWidth(key))
+        }
+        var next = Object.assign({}, widths)
+        next[key] = Math.max(minWidths[key], Math.ceil(px / Style.zoomFactor))
+        widths = next
+        layoutEdited()
+    }
+
     function toggleColumn(key) {
         var next = hidden.slice()
         var i = next.indexOf(key)
@@ -263,6 +284,7 @@ ColumnLayout {
             spacing: 0
 
             HeaderCell {
+                id: nameHeader
                 title: "Name"
                 Layout.preferredWidth: root.nameColumnWidth
                 Layout.minimumWidth: root.nameColumnWidth
@@ -271,6 +293,7 @@ ColumnLayout {
                 onClicked: root.headerClicked("name")
             }
             HeaderCell {
+                id: pathHeader
                 title: "Path"
                 visible: root.shown("path")
                 Layout.preferredWidth: root.colWidth("path")
@@ -280,6 +303,7 @@ ColumnLayout {
                 onClicked: root.headerClicked("path")
             }
             HeaderCell {
+                id: sizeHeader
                 title: "Size"
                 visible: root.shown("size")
                 Layout.preferredWidth: root.colWidth("size")
@@ -290,6 +314,7 @@ ColumnLayout {
                 onClicked: root.headerClicked("size")
             }
             HeaderCell {
+                id: dateHeader
                 title: "Modified"
                 visible: root.shown("date")
                 Layout.preferredWidth: root.colWidth("date")
@@ -303,7 +328,8 @@ ColumnLayout {
         }
 
         // One drag handle centered on the separator after each shown column,
-        // above the cells so a press there never reaches a header button
+        // above the cells so a press there never reaches a header button.
+        // Double-clicking it fits the column to its left.
         Repeater {
             model: root.visibleKeys
 
@@ -329,6 +355,13 @@ ColumnLayout {
                 onPositionChanged: function(mouse) {
                     if (pressed)
                         root.resizeTo(modelData, mapToGlobal(mouse.x, 0).x - startX)
+                }
+                onDoubleClicked: function(mouse) {
+                    root.fitColumn(modelData)
+                    // A pixel of movement before the release resizes from
+                    // the fitted width, not the one the press recorded
+                    startX = mapToGlobal(mouse.x, 0).x
+                    root.beginResize()
                 }
             }
         }
@@ -395,6 +428,21 @@ ColumnLayout {
             // except on the selected row where full contrast reads better
             readonly property real dim: highlighted ? 1 : 0.75
             readonly property string filePath: model.path || ""
+
+            // Width `key`'s cell needs to show this row without shortening
+            function fitWidth(key) {
+                switch (key) {
+                case "name":
+                    return nameLabel.implicitWidth + Style.iconSize + 3 * Style.marginSmall
+                case "path":
+                    return pathLabel.implicitWidth + 2 * Style.marginSmall
+                case "size":
+                    return sizeLabel.implicitWidth + Style.marginSmall
+                case "date":
+                    return dateLabel.implicitWidth + Style.marginSmall
+                }
+                return 0
+            }
             readonly property string folder: {
                 var p = model.path || ""
                 var fn = model.filename || ""
@@ -435,6 +483,7 @@ ColumnLayout {
                         Layout.leftMargin: Style.marginSmall
                     }
                     Label {
+                        id: nameLabel
                         text: model.filename || ""
                         color: row.textColor
                         font.pointSize: Style.fontSizeNormal
@@ -487,6 +536,7 @@ ColumnLayout {
                 }
 
                 Label {
+                    id: sizeLabel
                     visible: root.shown("size")
                     Layout.preferredWidth: root.colWidth("size")
                     Layout.minimumWidth: root.colWidth("size")
@@ -501,6 +551,7 @@ ColumnLayout {
                 }
 
                 Label {
+                    id: dateLabel
                     visible: root.shown("date")
                     Layout.preferredWidth: root.colWidth("date")
                     Layout.minimumWidth: root.colWidth("date")

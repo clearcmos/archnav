@@ -13,7 +13,7 @@ index of every path under your bookmarks and searches it as you type.
 - **Unified search** - Search all bookmarks simultaneously; every match is listed, and the list creates rows only as they scroll into view
 - **Extension filter** - Use `*.py query` to filter by file type
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
-- **Results table** - File-type icons from the icon theme, click a header to sort, drag its edge to resize, right-click it to show or hide Path, Size, and Modified; widths and hidden columns are remembered. Click a path to open its folder
+- **Results table** - File-type icons from the icon theme, click a header to sort, drag its edge to resize or double-click the edge to fit the column, right-click it to show or hide Path, Size, and Modified; widths and hidden columns are remembered. Click a path to open its folder
 - **Live updates** - inotify applies changes under local bookmarks as they happen (folders it cannot read are skipped); network mounts are rescanned every 5 minutes
 - **Keyboard-centric** - Focus stays in the search field: arrows, Page Up/Down, and Home/End move through the results, Enter opens, the Menu key opens the context menu, Esc hides to the tray
 - **System tray** - Persists in tray when closed, toggle with click or global hotkey

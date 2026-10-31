@@ -287,7 +287,10 @@ and archnav's zoom (Ctrl+=/-) only multiplies them.
   separator still and moves the one on its left instead, which is why the
   first drag fixes Name's width. There is no horizontal scrolling, so
   widening uses free space first, then narrows the columns after it from
-  the rightmost inward, each down to its minimum.
+  the rightmost inward, each down to its minimum. Double-clicking a
+  separator fits the column on its left to its title and the rows on screen
+  (`fitColumn`, using each delegate's `fitWidth`), as QHeaderView does; rows
+  off screen are not measured, since a result set can hold a million paths.
 - Header and row cells pin `Layout.minimumWidth`/`maximumWidth` to their
   preferred width. Without that, a list narrower than its columns (preview
   pane open) shrinks header cells and row cells differently and the columns
