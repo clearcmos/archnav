@@ -573,12 +573,27 @@ ColumnLayout {
             color: Kirigami.Theme.backgroundColor
         }
 
+        // The scroll bar's strip: solid, in the header's color, so the rows'
+        // alternating backgrounds stop at its edge as in Dolphin
+        Rectangle {
+            parent: listView
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            anchors.right: parent.right
+            width: root.scrollBarWidth
+            z: -1
+            Kirigami.Theme.colorSet: Kirigami.Theme.Header
+            Kirigami.Theme.inherit: false
+            color: Kirigami.Theme.backgroundColor
+        }
+
         delegate: ItemDelegate {
             id: row
-            width: listView.width
+            // Up to the scroll bar, so its highlight stops at the bar's edge
+            width: listView.width - root.scrollBarWidth
             height: Style.rowHeight
             leftPadding: root.rowPadding
-            rightPadding: root.rowPadding + root.scrollBarWidth
+            rightPadding: root.rowPadding
             topPadding: 0
             bottomPadding: 0
             highlighted: root.isSelected(index)
