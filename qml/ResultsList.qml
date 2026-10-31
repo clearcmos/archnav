@@ -520,6 +520,10 @@ ColumnLayout {
 
         ScrollBar.vertical: ScrollBar {
             policy: ScrollBar.AsNeeded
+            // The handle's share of the bar is the share of rows on screen,
+            // a sliver for a hundred thousand results; keep it long enough
+            // to see and grab, as Dolphin's is in an ordinary folder
+            minimumSize: height > 0 ? Math.min(0.5, Kirigami.Units.gridUnit * 5 / height) : 0
         }
 
         Kirigami.PlaceholderMessage {
