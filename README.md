@@ -15,9 +15,9 @@ index of every path under your bookmarks and searches it as you type.
 - **Sort options** - Recent, Oldest, Name, Size, Path, Frecency
 - **Results table** - File-type icons from the icon theme, click a header to sort, drag its edge to resize, right-click it to show or hide Path, Size, and Modified; widths and hidden columns are remembered. Click a path to open its folder
 - **Live updates** - inotify applies changes under local bookmarks as they happen (folders it cannot read are skipped); network mounts are rescanned every 5 minutes
-- **Keyboard-centric** - Arrow keys navigate, Enter opens, Esc hides to the tray
+- **Keyboard-centric** - Focus stays in the search field: arrows, Page Up/Down, and Home/End move through the results, Enter opens, the Menu key opens the context menu, Esc hides to the tray
 - **System tray** - Persists in tray when closed, toggle with click or global hotkey
-- **Context menu** - Right-click for Open With, Copy, Cut, Rename, Delete, Properties
+- **Context menu** - Right-click (or the Menu key) for Open With, Copy, Cut, Rename, Delete, Properties
 - **Zoom support** - Ctrl+=/- to scale UI
 - **Wayland native** - Works on KDE Plasma 6 Wayland; colors, fonts, and spacing follow the KDE theme (Kirigami and the Breeze desktop style)
 
@@ -70,6 +70,8 @@ This installs `archnav` to `/usr/bin/`, registers the desktop file, and ships th
 | Key | Action |
 |-----|--------|
 | `Arrow Up/Down` | Navigate results |
+| `Page Up/Down` | Move a page of results |
+| `Home` / `End` | First / last result (with no results, or with Shift, they act on the search text) |
 | `Enter` | Open file or folder |
 | `Ctrl+O` | Open containing folder |
 | `Ctrl+P` | Toggle preview pane |
@@ -79,7 +81,7 @@ This installs `archnav` to `/usr/bin/`, registers the desktop file, and ships th
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+Scroll` | Zoom in / out |
 | `Ctrl+0` | Reset zoom |
 | `F1` | Toggle keyboard shortcuts help |
-| `Right-click` | Context menu |
+| `Right-click`, `Menu`, `Shift+F10` | Context menu |
 | `Esc` | Hide to tray |
 
 ### Search Syntax

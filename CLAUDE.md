@@ -162,7 +162,7 @@ The search engine uses **trigram indexing** for substring matching:
 - **Previews**: Text, rendered Markdown, images, PDF and audio/video metadata, archive contents
 - **Real-time updates**: inotify watches for file changes (local paths only)
 - **Network mount support**: Periodic rescanning for network paths (marked `is_network`)
-- **Keyboard-centric**: Arrow keys navigate, Enter opens, Esc hides to tray
+- **Keyboard-centric**: Focus stays in the search field; arrows, Page Up/Down, and Home/End move through the results (`ResultsList.handleNavigationKey`, also wired on the list for after a row click), Enter opens, Menu/Shift+F10 open the context menu (a window `Shortcut`, so the search field does not also open its edit menu), Esc hides to tray
 - **Bookmark dialog**: Ctrl+B to add/rename/delete bookmarks; changes persist to config.json
 - **System tray**: Persists in tray when closed, left-click to toggle, right-click for menu
 - **Context menu**: Right-click for Open With, Cut, Copy, Rename, Delete (confirmed), Properties, etc.
@@ -174,6 +174,8 @@ The search engine uses **trigram indexing** for substring matching:
 | Key | Action |
 |-----|--------|
 | `Arrow Up/Down` | Navigate results |
+| `Page Up/Down` | Move a page of results |
+| `Home` / `End` | First / last result (with no results, or with Shift, they act on the search text) |
 | `Enter` | Open file (xdg-open) or folder |
 | `Ctrl+O` | Open containing folder |
 | `Ctrl+P` | Toggle preview pane |
@@ -186,7 +188,7 @@ The search engine uses **trigram indexing** for substring matching:
 | `Ctrl+0` | Reset zoom |
 | `Esc` | Hide to tray |
 | `F1` | Toggle keyboard shortcuts help |
-| `Right-click` | Context menu |
+| `Right-click`, `Menu`, `Shift+F10` | Context menu |
 
 ## Data Locations
 

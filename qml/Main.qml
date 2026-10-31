@@ -249,6 +249,9 @@ ApplicationWindow {
             Keys.onUpPressed: resultsList.moveUp()
             Keys.onReturnPressed: openSelected()
             Keys.onEnterPressed: openSelected()
+            Keys.onPressed: function(event) {
+                event.accepted = resultsList.handleNavigationKey(event)
+            }
         }
 
         // Content area: results + preview
@@ -360,6 +363,12 @@ ApplicationWindow {
         sequence: "Ctrl+O"
         onActivated: openContainingFolder()
     }
+    // The selected result's menu. A shortcut takes the key before the search
+    // field sees it, which would otherwise open its own edit menu as well.
+    Shortcut {
+        sequences: ["Menu", "Shift+F10"]
+        onActivated: resultsList.openContextMenu()
+    }
     Shortcut {
         sequence: "Escape"
         onActivated: root.close()
@@ -445,13 +454,19 @@ ApplicationWindow {
                 Label { text: "Up / Down"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Navigate results"; font.pointSize: Style.fontSizeNormal }
 
+                Label { text: "PgUp / PgDn"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Move a page of results"; font.pointSize: Style.fontSizeNormal }
+
+                Label { text: "Home / End"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "First / last result"; font.pointSize: Style.fontSizeNormal }
+
                 Label { text: "Enter"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Open file or folder"; font.pointSize: Style.fontSizeNormal }
 
                 Label { text: "Ctrl+O"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Open containing folder"; font.pointSize: Style.fontSizeNormal }
 
-                Label { text: "Right-click"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
+                Label { text: "Menu / Shift+F10"; color: Style.accentBlue; font.pointSize: Style.fontSizeNormal; font.family: Style.monoFont; Layout.alignment: Qt.AlignRight }
                 Label { text: "Context menu"; font.pointSize: Style.fontSizeNormal }
 
                 // Separator

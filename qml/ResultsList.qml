@@ -178,18 +178,64 @@ ColumnLayout {
         ? Math.max(nameMinWidth, availableWidth - othersWidth)
         : Math.max(nameMinWidth, Math.min(Math.round(widths.name * Style.zoomFactor), availableWidth - othersWidth))
 
+    // Select row `i`, clamped to the list, and scroll it into view
+    function moveTo(i) {
+        if (listView.count === 0)
+            return
+        listView.currentIndex = Math.max(0, Math.min(listView.count - 1, i))
+        listView.positionViewAtIndex(listView.currentIndex, ListView.Contain)
+    }
+
     function moveDown() {
-        if (listView.currentIndex < listView.count - 1) {
-            listView.currentIndex++
-            listView.positionViewAtIndex(listView.currentIndex, ListView.Contain)
-        }
+        moveTo(listView.currentIndex + 1)
     }
 
     function moveUp() {
-        if (listView.currentIndex > 0) {
-            listView.currentIndex--
-            listView.positionViewAtIndex(listView.currentIndex, ListView.Contain)
+        moveTo(listView.currentIndex - 1)
+    }
+
+    // Rows a page moves: what fits in the view, less one kept for context
+    readonly property int pageRows: Math.max(1, Math.floor(listView.height / Style.rowHeight) - 1)
+
+    // Page Up/Down and Home/End, for whichever has focus: the search field
+    // keeps it, but clicking a row takes it. With Shift, Home and End still
+    // select text in the search field, and with no results they move its
+    // cursor. Returns whether the key was used.
+    function handleNavigationKey(event) {
+        var mods = event.modifiers & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+        if (mods !== Qt.NoModifier)
+            return false
+        switch (event.key) {
+        case Qt.Key_PageDown:
+            moveTo(listView.currentIndex + pageRows)
+            return true
+        case Qt.Key_PageUp:
+            moveTo(listView.currentIndex - pageRows)
+            return true
+        case Qt.Key_Home:
+            if (listView.count === 0)
+                return false
+            moveTo(0)
+            return true
+        case Qt.Key_End:
+            if (listView.count === 0)
+                return false
+            moveTo(listView.count - 1)
+            return true
         }
+        return false
+    }
+
+    // The selected row's context menu, opened below its name
+    function openContextMenu() {
+        if (listView.currentIndex < 0)
+            return
+        listView.positionViewAtIndex(listView.currentIndex, ListView.Contain)
+        var item = listView.currentItem
+        if (!item)
+            return
+        var p = item.mapToGlobal(rowPadding + Style.iconSize, item.height)
+        contextMenuRequested(item.filePath, p.x, p.y)
     }
 
     // Column header
@@ -316,6 +362,11 @@ ColumnLayout {
         boundsBehavior: Flickable.StopAtBounds
         highlightMoveDuration: 0
 
+        // Up and Down are the view's own; these work after a click on a row
+        Keys.onPressed: function(event) {
+            event.accepted = root.handleNavigationKey(event)
+        }
+
         // A content view: the View color set, as Dolphin's file view uses
         Kirigami.Theme.colorSet: Kirigami.Theme.View
         Kirigami.Theme.inherit: false
@@ -343,6 +394,7 @@ ColumnLayout {
             // Secondary columns use the theme's dim (0.75, as Plasma does),
             // except on the selected row where full contrast reads better
             readonly property real dim: highlighted ? 1 : 0.75
+            readonly property string filePath: model.path || ""
             readonly property string folder: {
                 var p = model.path || ""
                 var fn = model.filename || ""
