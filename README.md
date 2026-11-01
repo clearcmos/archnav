@@ -20,7 +20,7 @@ index of every path under your bookmarks and searches it as you type.
 - **System tray** - Persists in tray when closed, toggle with click or global hotkey
 - **Context menu** - Right-click (or the Menu key) for Open With, Copy, Cut, Rename, Delete, Properties, on one result or the selection
 - **Zoom support** - Ctrl+=/- to scale UI
-- **Wayland native** - Works on KDE Plasma 6 Wayland; colors, fonts, and spacing follow the KDE theme (Kirigami and the Breeze desktop style)
+- **Wayland native** - Works on KDE Plasma 6 Wayland (tested on Arch Linux only); colors, fonts, and spacing follow the KDE theme (Kirigami and the Breeze desktop style)
 
 ## Dependencies
 
